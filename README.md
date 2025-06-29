@@ -5,7 +5,7 @@ This repository provides templates and scripts for creating Broforce mods and cu
 ## Setup
 Set these environment variables:
 - `BROFORCEPATH` - Path to your Broforce installation (e.g., `C:\Program Files (x86)\Steam\steamapps\common\Broforce`)
-- `REPOSPATH` - Path to your repositories folder
+- `REPOSPATH` - Path to your repositories folder (the folder which contains this folder)
 
 ## Creating Projects
 
