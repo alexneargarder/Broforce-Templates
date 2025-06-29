@@ -5,6 +5,27 @@ import re
 import argparse
 import json
 
+# Color codes for terminal output
+class Colors:
+    # Check if we're on Windows and colors are supported
+    if sys.platform == 'win32':
+        try:
+            import ctypes
+            kernel32 = ctypes.windll.kernel32
+            kernel32.SetConsoleMode(kernel32.GetStdHandle(-11), 7)
+        except:
+            pass
+    
+    HEADER = '\033[95m'
+    BLUE = '\033[94m'
+    CYAN = '\033[96m'
+    GREEN = '\033[92m'
+    WARNING = '\033[93m'
+    FAIL = '\033[91m'
+    ENDC = '\033[0m'
+    BOLD = '\033[1m'
+    UNDERLINE = '\033[4m'
+
 def copyanything(src, dst):
     def ignore_patterns(path, names):
         # Ignore Visual Studio user-specific files and folders
@@ -71,13 +92,13 @@ broforcePath = os.environ.get('BROFORCEPATH')
 repoPath = os.environ.get('REPOSPATH')
 
 if not broforcePath:
-    print("Error: BROFORCEPATH environment variable is not set.")
-    print("Please set BROFORCEPATH to the path of your Broforce folder.")
-    print("\nFor PowerShell (temporary):")
+    print(f"{Colors.FAIL}Error: BROFORCEPATH environment variable is not set.{Colors.ENDC}")
+    print(f"{Colors.WARNING}Please set BROFORCEPATH to the path of your Broforce folder.{Colors.ENDC}")
+    print(f"\n{Colors.CYAN}For PowerShell (temporary):{Colors.ENDC}")
     print('  $env:BROFORCEPATH = "C:\\Program Files (x86)\\Steam\\steamapps\\common\\Broforce"')
-    print("\nFor Command Prompt (temporary):")
+    print(f"\n{Colors.CYAN}For Command Prompt (temporary):{Colors.ENDC}")
     print('  set BROFORCEPATH="C:\\Program Files (x86)\\Steam\\steamapps\\common\\Broforce"')
-    print("\nTo set permanently:")
+    print(f"\n{Colors.CYAN}To set permanently:{Colors.ENDC}")
     print('  1. Search "environment variables" in the Windows Start Menu')
     print('  2. Click "Edit the system environment variables"')
     print('  3. Click "Environment Variables..." button')
@@ -88,13 +109,13 @@ if not broforcePath:
     sys.exit(1)
 
 if not repoPath:
-    print("Error: REPOSPATH environment variable is not set.")
-    print("Please set REPOSPATH to the path of your repositories folder.")
-    print("\nFor PowerShell (temporary):")
+    print(f"{Colors.FAIL}Error: REPOSPATH environment variable is not set.{Colors.ENDC}")
+    print(f"{Colors.WARNING}Please set REPOSPATH to the path of your repositories folder.{Colors.ENDC}")
+    print(f"\n{Colors.CYAN}For PowerShell (temporary):{Colors.ENDC}")
     print('  $env:REPOSPATH = "C:\\Users\\YourName\\repos"')
-    print("\nFor Command Prompt (temporary):")
+    print(f"\n{Colors.CYAN}For Command Prompt (temporary):{Colors.ENDC}")
     print('  set REPOSPATH=C:\\Users\\YourName\\repos')
-    print("\nTo set permanently:")
+    print(f"\n{Colors.CYAN}To set permanently:{Colors.ENDC}")
     print('  1. Search "environment variables" in the Windows Start Menu')
     print('  2. Click "Edit the system environment variables"')
     print('  3. Click "Environment Variables..." button')
@@ -106,12 +127,12 @@ if not repoPath:
 
 # Check if environment variable paths exist
 if not os.path.exists(broforcePath):
-    print(f"Error: BROFORCEPATH directory does not exist: {broforcePath}")
+    print(f"{Colors.FAIL}Error: BROFORCEPATH directory does not exist: {broforcePath}{Colors.ENDC}")
     print("Please check that the BROFORCEPATH environment variable points to a valid directory.")
     sys.exit(1)
 
 if not os.path.exists(repoPath):
-    print(f"Error: REPOSPATH directory does not exist: {repoPath}")
+    print(f"{Colors.FAIL}Error: REPOSPATH directory does not exist: {repoPath}{Colors.ENDC}")
     print("Please check that the REPOSPATH environment variable points to a valid directory.")
     sys.exit(1)
 
@@ -120,9 +141,9 @@ if args.type:
     template_type = args.type
 else:
     # Ask what type of template to create
-    print("What would you like to create?")
-    print("1. Mod")
-    print("2. Bro")
+    print(f"{Colors.HEADER}What would you like to create?{Colors.ENDC}")
+    print(f"{Colors.CYAN}1.{Colors.ENDC} Mod")
+    print(f"{Colors.CYAN}2.{Colors.ENDC} Bro")
     choice = input("Enter your choice (1 or 2): ").strip()
     
     if choice == "1":
@@ -130,7 +151,7 @@ else:
     elif choice == "2":
         template_type = "bro"
     else:
-        print("Invalid choice. Please run the script again and enter 1 or 2.")
+        print(f"{Colors.FAIL}Invalid choice. Please run the script again and enter 1 or 2.{Colors.ENDC}")
         sys.exit(1)
 
 # Set template parameters based on type
@@ -184,7 +205,7 @@ if not os.path.exists(modTemplatePath):
 if not os.path.exists(releasesPath):
     try:
         os.makedirs(releasesPath)
-        print(f"Created Releases directory: {releasesPath}")
+        print(f"{Colors.GREEN}Created Releases directory: {releasesPath}{Colors.ENDC}")
     except Exception as e:
         print(f"Error: Failed to create Releases directory: {e}")
         sys.exit(1)
@@ -274,12 +295,12 @@ try:
                 with open(bromaker_info_path, 'r', encoding='utf-8') as f:
                     bromaker_info = json.load(f)
                     bromaker_version = bromaker_info.get('Version', bromaker_version)
-                    print(f"Detected BroMaker version: {bromaker_version}")
+                    print(f"{Colors.GREEN}Detected BroMaker version: {bromaker_version}{Colors.ENDC}")
             except Exception as e:
-                print(f"Warning: Could not read BroMaker version from Info.json: {e}")
-                print(f"Using default BroMaker version: {bromaker_version}")
+                print(f"{Colors.WARNING}Warning: Could not read BroMaker version from Info.json: {e}{Colors.ENDC}")
+                print(f"{Colors.WARNING}Using default BroMaker version: {bromaker_version}{Colors.ENDC}")
         else:
-            print(f"Warning: BroMaker Info.json not found at {bromaker_info_path}")
+            print(f"{Colors.WARNING}Warning: BroMaker Info.json not found at {bromaker_info_path}{Colors.ENDC}")
             print(f"Using default BroMaker version: {bromaker_version}")
         
         # Replace BroMaker version placeholder
@@ -290,8 +311,8 @@ try:
         # First try the local Bro-Maker repo path
         local_bromaker_path = os.path.join(repoPath, "Bro-Maker", "BroMakerLib", "bin", "Debug", "BroMakerLib.dll")
         if os.path.exists(local_bromaker_path):
-            print(f"Found local BroMakerLib at: {local_bromaker_path}")
-            print("Using local development version of BroMakerLib")
+            print(f"{Colors.GREEN}Found local BroMakerLib at: {local_bromaker_path}{Colors.ENDC}")
+            print(f"{Colors.BLUE}Using local development version of BroMakerLib{Colors.ENDC}")
             
             # Update .csproj files to use the local development path
             csproj_files = []
@@ -310,7 +331,9 @@ try:
                 
                 # Replace the HintPath for BroMakerLib
                 pattern = r'(<Reference Include="BroMakerLib[^>]*>.*?<HintPath>)(.*?)(</HintPath>)'
-                replacement = rf'\1{rel_path}\3'
+                # Escape backslashes for regex replacement
+                escaped_path = rel_path.replace('\\', '\\\\')
+                replacement = rf'\1{escaped_path}\3'
                 content = re.sub(pattern, replacement, content, flags=re.DOTALL)
                 
                 with open(csproj_file, 'w', encoding='utf-8') as f:
@@ -322,12 +345,12 @@ try:
             installed_bromaker_path = os.path.join(broforcePath, "Mods", "BroMaker", "BroMakerLib.dll")
             
             if os.path.exists(installed_bromaker_path):
-                print("Found installed BroMakerLib.dll in Mods folder")
+                print(f"{Colors.GREEN}Found installed BroMakerLib.dll in Mods folder{Colors.ENDC}")
             else:
-                print("Warning: Could not find BroMakerLib.dll in either location:")
+                print(f"{Colors.WARNING}Warning: Could not find BroMakerLib.dll in either location:{Colors.ENDC}")
                 print(f"  - Local repo: {local_bromaker_path}")
                 print(f"  - Installed: {installed_bromaker_path}")
-                print("Make sure BroMaker is installed in your Mods folder")
+                print(f"{Colors.WARNING}Make sure BroMaker is installed in your Mods folder{Colors.ENDC}")
     
     # Create the Changelog.txt file in the Releases folder
     changelogPath = os.path.join(newReleasePathOuter, 'Changelog.txt')
@@ -336,11 +359,11 @@ try:
     with open(changelogPath, 'w', encoding='utf-8') as changelogFile:
         changelogFile.write(changelogContent)
     
-    print(f"\nSuccess! Created new {template_type} '{newName}'")
-    print(f"Source files: {newRepoPath}")
-    print(f"Release files: {newReleasePathInner}")
-    print(f"\nNote: Run the CREATE LINKS.bat script in the Releases folder to create symlinks")
+    print(f"\n{Colors.GREEN}{Colors.BOLD}Success! Created new {template_type} '{newName}'{Colors.ENDC}")
+    print(f"{Colors.CYAN}Source files:{Colors.ENDC} {newRepoPath}")
+    print(f"{Colors.CYAN}Release files:{Colors.ENDC} {newReleasePathInner}")
+    print(f"\n{Colors.WARNING}Note:{Colors.ENDC} Run the CREATE LINKS.bat script in the Releases folder to create symlinks")
     
 except Exception as e:
-    print(f"Error: Failed during file processing: {e}")
+    print(f"{Colors.FAIL}Error: Failed during file processing: {e}{Colors.ENDC}")
     sys.exit(1)
