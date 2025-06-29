@@ -75,17 +75,28 @@ parser = argparse.ArgumentParser(
   %(prog)s                     # Interactive mode
   %(prog)s -t mod -n "My Mod" -a "MyName"
   %(prog)s --type bro --name "Super Bro" --author "CoolDev"
+  %(prog)s -t mod -n "My Mod" -a "MyName" -o "BroforceMods"  # Output to different repo
 '''
 )
 parser.add_argument('-t', '--type', choices=['mod', 'bro'], help='Project type (mod or bro)')
 parser.add_argument('-n', '--name', help='Name of the mod or bro')
 parser.add_argument('-a', '--author', help='Author name')
+parser.add_argument('-o', '--output-repo', help='Name of the repository to output to (defaults to current repo)')
 args = parser.parse_args()
 
 # Get the repository name dynamically based on script location
 script_dir = os.path.dirname(os.path.abspath(__file__))
-repo_dir = os.path.dirname(script_dir)
-repo_name = os.path.basename(repo_dir)
+template_repo_dir = os.path.dirname(script_dir)  # Repository containing the templates
+template_repo_name = os.path.basename(template_repo_dir)
+
+# Determine output repository
+if args.output_repo:
+    # Use specified output repository
+    output_repo_name = args.output_repo
+    print(f"{Colors.BLUE}Using output repository: {output_repo_name}{Colors.ENDC}")
+else:
+    # Default to current repository
+    output_repo_name = template_repo_name
 
 # Check for required environment variables
 broforcePath = os.environ.get('BROFORCEPATH')
@@ -182,13 +193,24 @@ else:
     authorName = input('Enter author name (e.g., YourName):\n')
 
 # Define paths
-templatePath = os.path.join(repo_dir, source_template_name)
-modTemplatePath = os.path.join(repo_dir, 'Scripts', install_template_name)
-# Create the release folder structure
-releasesPath = os.path.join(repo_dir, 'Releases')
+# Templates always come from the template repository
+templatePath = os.path.join(template_repo_dir, source_template_name)
+modTemplatePath = os.path.join(template_repo_dir, 'Scripts', install_template_name)
+
+# Output paths go to the specified repository
+output_repo_path = os.path.join(repoPath, output_repo_name)
+
+# Check if output repository exists
+if not os.path.exists(output_repo_path):
+    print(f"{Colors.FAIL}Error: Output repository does not exist: {output_repo_path}{Colors.ENDC}")
+    print(f"{Colors.WARNING}Please ensure the repository '{output_repo_name}' exists in: {repoPath}{Colors.ENDC}")
+    sys.exit(1)
+
+# Create the release folder structure in output repo
+releasesPath = os.path.join(output_repo_path, 'Releases')
 newReleasePathOuter = os.path.join(releasesPath, newName)
 newReleasePathInner = os.path.join(newReleasePathOuter, newName)
-newRepoPath = os.path.join(repo_dir, newName)
+newRepoPath = os.path.join(output_repo_path, newName)
 
 # Check if template directories exist
 if not os.path.exists(templatePath):
@@ -276,9 +298,9 @@ try:
         findReplace(newRepoPath, "AUTHOR_NAME", authorName, fileType)
         findReplace(newReleasePathInner, "AUTHOR_NAME", authorName, fileType)
         
-        # Replace repository URL
-        findReplace(newRepoPath, "REPO_NAME", repo_name, fileType)
-        findReplace(newReleasePathInner, "REPO_NAME", repo_name, fileType)
+        # Replace repository URL with output repository name
+        findReplace(newRepoPath, "REPO_NAME", output_repo_name, fileType)
+        findReplace(newReleasePathInner, "REPO_NAME", output_repo_name, fileType)
     
     # Special handling for .csproj file references for Bros
     if template_type == "bro":
@@ -360,6 +382,8 @@ try:
         changelogFile.write(changelogContent)
     
     print(f"\n{Colors.GREEN}{Colors.BOLD}Success! Created new {template_type} '{newName}'{Colors.ENDC}")
+    if args.output_repo:
+        print(f"{Colors.CYAN}Output repository:{Colors.ENDC} {output_repo_name}")
     print(f"{Colors.CYAN}Source files:{Colors.ENDC} {newRepoPath}")
     print(f"{Colors.CYAN}Release files:{Colors.ENDC} {newReleasePathInner}")
     print(f"\n{Colors.WARNING}Note:{Colors.ENDC} Run the CREATE LINKS.bat script in the Releases folder to create symlinks")
