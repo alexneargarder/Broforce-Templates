@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <PropertyGroup>
+
+    <!-- Copy this file to LocalBroforcePath.props and update the path below -->
+
+    <!-- Broforce installation directory -->
+    <BroforcePath>C:\Program Files (x86)\Steam\steamapps\common\Broforce</BroforcePath>
+
+    <!-- OR for Thunderstore/r2modman (disable the Thunderstore version before building) -->
+    <!-- <BroforcePath>C:\Users\YourName\AppData\Roaming\r2modmanPlus-local\Broforce\profiles\Default\UMM</BroforcePath> -->
+
+    <!-- Optional: Close Broforce before building (prevents file locking) -->
+    <CloseBroforceOnBuild>true</CloseBroforceOnBuild>
+
+    <!-- Optional: Launch Broforce after building -->
+    <LaunchBroforceOnBuild>true</LaunchBroforceOnBuild>
+
+  </PropertyGroup>
+</Project>
