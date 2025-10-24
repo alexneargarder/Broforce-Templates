@@ -1,0 +1,40 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+
+  <!--
+    OPTIONAL: Share build settings across all Broforce repos
+
+    Place this file in the parent directory of all your Broforce repos.
+    Each repo's LocalBroforcePath.props will automatically import it if it exists.
+
+    Setup:
+    1. Copy this file to BroforceGlobal.props (same directory)
+    2. Update settings below
+    3. Add BroforceGlobal.props to parent directory's .gitignore (if tracked)
+
+    Individual repos can override these settings in their LocalBroforcePath.props.
+  -->
+
+  <PropertyGroup>
+
+    <!-- Broforce installation directory -->
+    <BroforcePath>C:\Program Files (x86)\Steam\steamapps\common\Broforce</BroforcePath>
+
+    <!-- For Thunderstore/r2modman: -->
+    <!-- <BroforcePath>C:\Users\YourName\AppData\Roaming\r2modmanPlus-local\Broforce\profiles\Default\UMM</BroforcePath> -->
+
+    <!-- Close game before build to prevent file locking (default: true) -->
+    <CloseBroforceOnBuild>true</CloseBroforceOnBuild>
+
+    <!-- Launch game via Steam after build (default: false) -->
+    <LaunchBroforceOnBuild>false</LaunchBroforceOnBuild>
+
+    <!-- Use hard links for ModContent files - faster but DLL always copied (default: false) -->
+    <UseHardLinksForInstall>true</UseHardLinksForInstall>
+
+    <!-- Show detailed build messages (default: false) -->
+    <VerboseBuildOutput>false</VerboseBuildOutput>
+
+  </PropertyGroup>
+
+</Project>
