@@ -3,9 +3,25 @@
 This repository provides templates and scripts for creating Broforce mods and custom bros.
 
 ## Setup
-Set these environment variables:
-- `BROFORCEPATH` - Path to your Broforce installation (e.g., `C:\Program Files (x86)\Steam\steamapps\common\Broforce`)
-- `REPOSPATH` - Path to your repositories folder (the folder which contains this folder)
+
+Create a props file in your repos parent directory to configure paths:
+
+### Option 1: LocalBroforcePath.props (per-machine, git-ignored)
+```xml
+<?xml version="1.0" encoding="utf-8"?>
+<Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <PropertyGroup>
+    <BroforcePath>C:\Program Files (x86)\Steam\steamapps\common\Broforce</BroforcePath>
+    <BroMakerLibPath>C:\Users\YourName\repos\Bro-Maker\BroMakerLib\_ModContent\BroMakerLib.dll</BroMakerLibPath>
+    <RocketLibPath>C:\Users\YourName\repos\RocketLib\RocketLib\_ModContent\RocketLib.dll</RocketLibPath>
+  </PropertyGroup>
+</Project>
+```
+
+### Option 2: BroforceGlobal.props (shared settings)
+Create this file in your repos parent directory with the same structure as above.
+
+See `Scripts/LocalBroforcePath.example.props` and `Scripts/BroforceGlobal.example.props` for templates.
 
 ## Creating Projects
 
@@ -22,7 +38,6 @@ python create-project.py --type bro --name "My Bro" --author "YourName"
 
 # Create in a different repository
 python create-project.py -t mod -n "My Mod" -a "YourName" -o "BroforceMods"
-python create-project.py --type bro --name "My Bro" --author "YourName" --output-repo "MyOtherRepo"
 ```
 
 ### Options
@@ -30,20 +45,31 @@ python create-project.py --type bro --name "My Bro" --author "YourName" --output
 - `-t, --type` - Project type: `mod` or `bro`
 - `-n, --name` - Project name
 - `-a, --author` - Author name
-- `-o, --output-repo` - Name of the repository to output to (defaults to current repo)
+- `-o, --output-repo` - Name of the repository to output to
 
 The script will:
-1. Create source files in the specified repository (or current repo if not specified)
-2. Create release files in `Releases/[ProjectName]/` within the output repository
-3. Generate a Changelog.txt
-4. Configure BroMakerLib references (for bro projects)
+1. Create source files in the specified repository
+2. Create a `Releases/[ProjectName]/` folder with Changelog.md
+3. Copy `BroforceModBuild.targets` to the output repository's Scripts folder
+4. Configure the project to use BroforceModBuild.targets
 
-When using the `-o` flag, the script will use templates from this repository but create all output files in the specified repository. This allows you to keep templates separate from your actual mod projects.
+### Building Projects
 
-**Note:** The output repository must have the required build scripts in its `Scripts` folder:
-- `bro-pre-build.bat` and `bro-post-build.bat` (for bro projects)
-- `mod-pre-build.bat` and `mod-post-build.bat` (for mod projects)
+The build targets file automatically:
+- Detects project type (mod or bro)
+- Copies DLL to `_ModContent` folder
+- Installs to game directory on build
+- Optionally closes/launches Broforce
+- Supports hard links for faster builds
 
-These scripts are referenced by the generated .csproj files and are necessary for building the projects.
+Build in Visual Studio or with MSBuild - everything is automatic!
 
-Run `CREATE LINKS.bat` in the Releases folder to create symlinks to your mods.
+### Releases Folder Structure
+
+```
+Releases/
+└── ProjectName/
+    └── Changelog.md    # Version history
+```
+
+The `_ModContent` folder in your project contains all mod/bro assets and gets installed to the game automatically on build.
