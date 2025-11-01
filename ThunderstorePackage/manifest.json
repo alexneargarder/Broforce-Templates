@@ -1,0 +1,10 @@
+{
+  "name": "PACKAGE_NAME",
+  "author": "AUTHOR_NAME",
+  "version_number": "1.0.0",
+  "website_url": "https://github.com/AUTHOR_NAME/REPO_NAME",
+  "description": "DESCRIPTION_PLACEHOLDER",
+  "dependencies": [
+    "UMM-UMM-1.0.0"
+  ]
+}
