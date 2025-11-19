@@ -11,7 +11,27 @@ try:
 except ImportError:
     questionary = None
 
+# Thunderstore dependency versions (update these when new versions are released)
+DEPENDENCY_VERSIONS = {
+    'UMM': '1.0.1',
+    'RocketLib': '2.4.0',
+    'BroMaker': '1.0.0',  # Placeholder - not yet uploaded
+}
+
+# Dependency string format: "Namespace-PackageName-Version"
+DEPENDENCIES = {
+    'UMM': f"UMM-UMM-{DEPENDENCY_VERSIONS['UMM']}",
+    'RocketLib': f"RocketLib-RocketLib-{DEPENDENCY_VERSIONS['RocketLib']}",
+    'BroMaker': f"BroMaker-BroMaker-{DEPENDENCY_VERSIONS['BroMaker']}",
+}
+
 # Color codes for terminal output
+# Color scheme:
+#   GREEN - Actions taken (files created/modified)
+#   CYAN - Key information (version, package name, selected project)
+#   BLUE - Status info (already correct, no change needed)
+#   WARNING (yellow) - Warnings and prompts
+#   FAIL (red) - Errors
 class Colors:
     # Check if we're on Windows and colors are supported
     if sys.platform == 'win32':
@@ -186,6 +206,69 @@ def sanitize_package_name(name):
     sanitized = re.sub(r'[^a-zA-Z0-9_]', '', sanitized)
     return sanitized
 
+def detect_dependencies_from_csproj(project_path):
+    """Detect RocketLib and BroMaker dependencies from .csproj file
+
+    Returns list of dependency strings (e.g., ["RocketLib-RocketLib-2.4.0"])
+    """
+    dependencies = [DEPENDENCIES['UMM']]  # Always include UMM
+
+    # Find .csproj file
+    csproj_files = []
+    for root, dirs, files in os.walk(project_path):
+        for file in files:
+            if file.endswith('.csproj'):
+                csproj_files.append(os.path.join(root, file))
+        # Only check first level
+        break
+
+    if not csproj_files:
+        return dependencies
+
+    csproj_path = csproj_files[0]
+
+    try:
+        tree = ET.parse(csproj_path)
+        root = tree.getroot()
+
+        # Handle namespace
+        ns = {'msbuild': 'http://schemas.microsoft.com/developer/msbuild/2003'}
+
+        # Check for RocketLib reference
+        for ref in root.findall('.//msbuild:Reference', ns):
+            include = ref.get('Include', '')
+            if 'RocketLib' in include:
+                dependencies.append(DEPENDENCIES['RocketLib'])
+                break
+
+        # Try without namespace
+        if DEPENDENCIES['RocketLib'] not in dependencies:
+            for ref in root.findall('.//Reference'):
+                include = ref.get('Include', '')
+                if 'RocketLib' in include:
+                    dependencies.append(DEPENDENCIES['RocketLib'])
+                    break
+
+        # Check for BroMakerLib reference
+        for ref in root.findall('.//msbuild:Reference', ns):
+            include = ref.get('Include', '')
+            if 'BroMakerLib' in include:
+                dependencies.append(DEPENDENCIES['BroMaker'])
+                break
+
+        # Try without namespace
+        if DEPENDENCIES['BroMaker'] not in dependencies:
+            for ref in root.findall('.//Reference'):
+                include = ref.get('Include', '')
+                if 'BroMakerLib' in include:
+                    dependencies.append(DEPENDENCIES['BroMaker'])
+                    break
+
+    except Exception as e:
+        print(f"{Colors.WARNING}Warning: Could not parse .csproj: {e}{Colors.ENDC}")
+
+    return dependencies
+
 def get_source_directory(project_path):
     """Get the actual source directory containing _ModContent
 
@@ -264,6 +347,112 @@ def find_dll_in_modcontent(modcontent_path):
             return os.path.join(modcontent_path, file)
 
     return None
+
+def get_version_from_info_json(modcontent_path, project_type):
+    """Get version from Info.json (mods) or .mod.json (bros)
+
+    Returns version string or None if not found
+    """
+    if not os.path.exists(modcontent_path):
+        return None
+
+    version_file = None
+    if project_type == 'mod':
+        info_path = os.path.join(modcontent_path, 'Info.json')
+        if os.path.exists(info_path):
+            version_file = info_path
+    else:
+        for file in os.listdir(modcontent_path):
+            if file.endswith('.mod.json'):
+                version_file = os.path.join(modcontent_path, file)
+                break
+
+    if not version_file:
+        return None
+
+    try:
+        with open(version_file, 'r', encoding='utf-8') as f:
+            version_data = json.load(f)
+        return version_data.get('Version', None)
+    except Exception:
+        return None
+
+def compare_versions(v1, v2):
+    """Compare semantic versions. Returns 1 if v1 > v2, -1 if v1 < v2, 0 if equal"""
+    if not v1:
+        return -1
+    if not v2:
+        return 1
+
+    try:
+        parts1 = [int(x) for x in v1.split('.')]
+        parts2 = [int(x) for x in v2.split('.')]
+
+        # Pad to same length
+        while len(parts1) < len(parts2):
+            parts1.append(0)
+        while len(parts2) < len(parts1):
+            parts2.append(0)
+
+        for p1, p2 in zip(parts1, parts2):
+            if p1 > p2:
+                return 1
+            elif p1 < p2:
+                return -1
+        return 0
+    except (ValueError, AttributeError):
+        return 0
+
+def sync_version_file(modcontent_path, project_type, target_version):
+    """Sync version in Info.json (mods) or .mod.json (bros) with target version
+
+    Returns: (updated, version_file_path) tuple
+        - updated: True if version was updated, False if already correct
+        - version_file_path: Path to the version file that was checked/updated
+    """
+    if not os.path.exists(modcontent_path):
+        return (False, None)
+
+    # Find the appropriate version file
+    version_file = None
+    if project_type == 'mod':
+        # For mods: Info.json
+        info_path = os.path.join(modcontent_path, 'Info.json')
+        if os.path.exists(info_path):
+            version_file = info_path
+    else:
+        # For bros: {BroName}.mod.json
+        for file in os.listdir(modcontent_path):
+            if file.endswith('.mod.json'):
+                version_file = os.path.join(modcontent_path, file)
+                break
+
+    if not version_file:
+        return (False, None)
+
+    # Read current version
+    try:
+        with open(version_file, 'r', encoding='utf-8') as f:
+            version_data = json.load(f)
+
+        current_version = version_data.get('Version', '')
+
+        # Check if update needed
+        if current_version == target_version:
+            return (False, version_file)
+
+        # Update version
+        version_data['Version'] = target_version
+
+        # Write back to file
+        with open(version_file, 'w', encoding='utf-8') as f:
+            json.dump(version_data, f, indent=2)
+
+        return (True, version_file)
+
+    except Exception as e:
+        print(f"{Colors.WARNING}Warning: Could not sync version file: {e}{Colors.ENDC}")
+        return (False, version_file)
 
 def detect_current_repo(repos_parent):
     """Detect which repo we're currently in based on cwd
@@ -514,6 +703,14 @@ def do_init_thunderstore(project_name, script_dir, repos_parent):
         with open(changelog_path, 'w', encoding='utf-8') as f:
             f.write('## v1.0.0 (unreleased)\n- Initial release\n')
 
+    # Detect dependencies from .csproj
+    detected_deps = detect_dependencies_from_csproj(project_path)
+    if len(detected_deps) > 1:  # More than just UMM
+        print(f"{Colors.CYAN}Detected dependencies:{Colors.ENDC}")
+        for dep in detected_deps:
+            if dep != DEPENDENCIES['UMM']:
+                print(f"  - {dep}")
+
     # Create manifest.json
     manifest_path = os.path.join(releases_path, 'manifest.json')
     manifest_data = {
@@ -522,9 +719,7 @@ def do_init_thunderstore(project_name, script_dir, repos_parent):
         "version_number": "1.0.0",
         "website_url": website_url,
         "description": description,
-        "dependencies": [
-            "UMM-UMM-1.0.0"
-        ]
+        "dependencies": detected_deps
     }
 
     with open(manifest_path, 'w', encoding='utf-8') as f:
@@ -583,8 +778,6 @@ def do_package(project_name, script_dir, repos_parent, version_override=None):
     import tempfile
     import filecmp
 
-    print(f"{Colors.HEADER}Packaging '{project_name}' for Thunderstore{Colors.ENDC}")
-
     template_repo_dir = os.path.dirname(script_dir)
 
     # Find project (same logic as init-thunderstore)
@@ -620,8 +813,6 @@ def do_package(project_name, script_dir, repos_parent, version_override=None):
         print(f"{Colors.FAIL}Error: Could not find project '{project_name}'{Colors.ENDC}")
         sys.exit(1)
 
-    print(f"{Colors.GREEN}Found project in: {output_repo}{Colors.ENDC}")
-
     # Validate metadata exists
     manifest_path = os.path.join(releases_path, 'manifest.json')
     readme_path = os.path.join(releases_path, 'README.md')
@@ -647,8 +838,6 @@ def do_package(project_name, script_dir, repos_parent, version_override=None):
         print(f"{Colors.FAIL}Error: Could not detect project type{Colors.ENDC}")
         sys.exit(1)
 
-    print(f"{Colors.BLUE}Project type: {project_type}{Colors.ENDC}")
-
     # Validate DLL exists
     source_dir = get_source_directory(project_path)
     if not source_dir:
@@ -663,24 +852,80 @@ def do_package(project_name, script_dir, repos_parent, version_override=None):
         print(f"Build the project first")
         sys.exit(1)
 
-    print(f"{Colors.GREEN}Found DLL: {os.path.basename(dll_path)}{Colors.ENDC}")
-
     # Check if icon is placeholder
     icon_template = os.path.join(template_repo_dir, 'ThunderstorePackage', 'icon.png')
     if os.path.exists(icon_template) and filecmp.cmp(icon_path, icon_template, shallow=False):
         print(f"{Colors.WARNING}⚠️  Warning: Using placeholder icon{Colors.ENDC}")
 
-    # Get version
+    # Get version from all sources and find the highest
     if version_override:
         version = version_override
+        print(f"{Colors.CYAN}Using version override: {version}{Colors.ENDC}")
     else:
-        version = get_version_from_changelog(changelog_path)
-        if not version:
-            print(f"{Colors.FAIL}Error: Could not parse version from Changelog.md{Colors.ENDC}")
-            print(f"Expected format: ## v1.0.0 or ## v1.0.0 (unreleased)")
+        # Check all version sources
+        changelog_version = get_version_from_changelog(changelog_path)
+        manifest_version = None
+        info_version = None
+
+        # Try to read manifest version (may not exist yet on first init)
+        try:
+            with open(manifest_path, 'r', encoding='utf-8') as f:
+                manifest_data_temp = json.load(f)
+            manifest_version = manifest_data_temp.get('version_number', None)
+        except Exception:
+            pass
+
+        # Get version from Info.json or .mod.json
+        info_version = get_version_from_info_json(modcontent_path, project_type)
+
+        # Find highest version
+        versions = {
+            'Changelog.md': changelog_version,
+            'manifest.json': manifest_version,
+            'Info.json/.mod.json': info_version
+        }
+
+        # Filter out None values
+        valid_versions = {k: v for k, v in versions.items() if v is not None}
+
+        if not valid_versions:
+            print(f"{Colors.FAIL}Error: Could not find version in any file{Colors.ENDC}")
+            print(f"Expected version in Changelog.md, manifest.json, or Info.json/.mod.json")
             sys.exit(1)
 
-    print(f"{Colors.CYAN}Package version: {version}{Colors.ENDC}")
+        # Find the highest version
+        highest_version = None
+        highest_source = None
+        for source, ver in valid_versions.items():
+            if highest_version is None or compare_versions(ver, highest_version) > 0:
+                highest_version = ver
+                highest_source = source
+
+        version = highest_version
+
+        # Show version info
+        print(f"{Colors.CYAN}Package version: {version}{Colors.ENDC}")
+
+        # Only warn if Changelog is behind (user forgot to update it)
+        if changelog_version and compare_versions(changelog_version, version) < 0:
+            print(f"\n{Colors.WARNING}Warning: Changelog.md is out of date!{Colors.ENDC}")
+            print(f"{Colors.CYAN}Changelog version: {changelog_version}{Colors.ENDC}")
+            print(f"{Colors.CYAN}Highest version found: {version} (from {highest_source}){Colors.ENDC}")
+            print(f"\n{Colors.WARNING}Did you forget to update Changelog.md?{Colors.ENDC}")
+
+            if questionary:
+                continue_package = questionary.confirm(
+                    f"Continue packaging with version {version}?",
+                    default=False
+                ).ask()
+            else:
+                response = input(f"\nContinue packaging with version {version}? (y/n): ").strip().lower()
+                continue_package = response in ['y', 'yes']
+
+            if not continue_package:
+                print(f"\n{Colors.CYAN}Packaging cancelled.{Colors.ENDC}")
+                print(f"Update Changelog.md to version {version} before packaging.")
+                sys.exit(0)
 
     # Load and update manifest
     with open(manifest_path, 'r', encoding='utf-8') as f:
@@ -689,14 +934,150 @@ def do_package(project_name, script_dir, repos_parent, version_override=None):
     namespace = manifest_data.get('author', 'Unknown')
     package_name = manifest_data.get('name', project_name.replace(' ', '_'))
 
+    # Check for missing author
+    if namespace == 'Unknown' or not namespace:
+        print(f"\n{Colors.WARNING}Warning: No author/namespace set in manifest.json{Colors.ENDC}")
+        print(f"{Colors.CYAN}The author field is used for the package filename and Thunderstore namespace.{Colors.ENDC}")
+
+        if questionary:
+            set_author = questionary.confirm(
+                "Set author name now?",
+                default=True
+            ).ask()
+        else:
+            response = input("\nSet author name now? (y/n): ").strip().lower()
+            set_author = response in ['y', 'yes']
+
+        if set_author:
+            if questionary:
+                namespace = questionary.text(
+                    "Enter namespace/author (alphanumeric + underscores only):",
+                    validate=lambda text: validate_package_name(text)[0]
+                ).ask()
+            else:
+                while True:
+                    namespace = input("Enter namespace/author (alphanumeric + underscores only): ").strip()
+                    valid, msg = validate_package_name(namespace)
+                    if valid:
+                        break
+                    print(f"{Colors.FAIL}Invalid: {msg}{Colors.ENDC}")
+
+            manifest_data['author'] = namespace
+            print(f"{Colors.GREEN}Author set to: {namespace}{Colors.ENDC}")
+        else:
+            print(f"{Colors.WARNING}Continuing with 'Unknown' as author (package will be named Unknown-{package_name}-{version}.zip){Colors.ENDC}")
+
+    # Check for outdated dependencies
+    current_deps = manifest_data.get('dependencies', [])
+    outdated_deps = []
+    updated_deps = []
+
+    for dep in current_deps:
+        # Parse dependency string: "Namespace-PackageName-Version"
+        parts = dep.rsplit('-', 1)
+        if len(parts) == 2:
+            dep_name_part, dep_version = parts
+            # Check against known dependencies
+            for dep_key, current_dep_string in DEPENDENCIES.items():
+                if current_dep_string.startswith(dep_name_part + '-'):
+                    # This is a known dependency, check version
+                    if dep != current_dep_string:
+                        outdated_deps.append((dep, current_dep_string))
+                        updated_deps.append(current_dep_string)
+                    else:
+                        updated_deps.append(dep)
+                    break
+            else:
+                # Unknown dependency, keep as-is
+                updated_deps.append(dep)
+        else:
+            # Malformed dependency string, keep as-is
+            updated_deps.append(dep)
+
+    # Prompt to update if outdated dependencies found
+    if outdated_deps:
+        print(f"\n{Colors.WARNING}Outdated dependencies detected:{Colors.ENDC}")
+        for old_dep, new_dep in outdated_deps:
+            print(f"  {old_dep} → {new_dep}")
+
+        if questionary:
+            update = questionary.confirm(
+                "Update dependencies to latest versions?",
+                default=True
+            ).ask()
+        else:
+            response = input("\nUpdate dependencies to latest versions? (y/n): ").strip().lower()
+            update = response in ['y', 'yes']
+
+        if update:
+            manifest_data['dependencies'] = updated_deps
+            print(f"{Colors.GREEN}Dependencies updated{Colors.ENDC}")
+        else:
+            print(f"{Colors.CYAN}Keeping existing dependency versions{Colors.ENDC}")
+    else:
+        # No outdated deps, use current deps for further checks
+        updated_deps = current_deps
+
+    # Check for missing dependencies (detected in .csproj but not in manifest)
+    detected_deps = detect_dependencies_from_csproj(project_path)
+    current_dep_set = set(updated_deps if updated_deps else current_deps)
+    missing_deps = []
+
+    for dep in detected_deps:
+        if dep not in current_dep_set:
+            missing_deps.append(dep)
+
+    if missing_deps:
+        print(f"\n{Colors.WARNING}Warning: Dependencies detected in .csproj but not in manifest.json:{Colors.ENDC}")
+        for dep in missing_deps:
+            print(f"  + {dep}")
+
+        if questionary:
+            add_deps = questionary.confirm(
+                "Add missing dependencies to manifest?",
+                default=True
+            ).ask()
+        else:
+            response = input("\nAdd missing dependencies to manifest? (y/n): ").strip().lower()
+            add_deps = response in ['y', 'yes']
+
+        if add_deps:
+            # Add missing dependencies to the list
+            if updated_deps:
+                updated_deps.extend(missing_deps)
+            else:
+                updated_deps = list(current_dep_set) + missing_deps
+            manifest_data['dependencies'] = updated_deps
+            print(f"{Colors.GREEN}Missing dependencies added{Colors.ENDC}")
+        else:
+            print(f"{Colors.CYAN}Continuing without adding missing dependencies{Colors.ENDC}")
+
     # Update manifest version
+    old_manifest_version = manifest_data.get('version_number', None)
     manifest_data['version_number'] = version
 
     # Write updated manifest back to file
     with open(manifest_path, 'w', encoding='utf-8') as f:
         json.dump(manifest_data, f, indent=2)
 
-    print(f"{Colors.GREEN}Updated manifest.json version to {version}{Colors.ENDC}")
+    # Only show message if version actually changed
+    if old_manifest_version != version:
+        print(f"{Colors.GREEN}Updated manifest.json version to {version}{Colors.ENDC}")
+    else:
+        print(f"{Colors.BLUE}manifest.json already at version {version}{Colors.ENDC}")
+
+    # Sync version in Info.json (mods) or .mod.json (bros)
+    updated, version_file_path = sync_version_file(modcontent_path, project_type, version)
+    if updated:
+        version_file_name = os.path.basename(version_file_path)
+        print(f"{Colors.GREEN}Updated {version_file_name} version to {version}{Colors.ENDC}")
+    elif version_file_path:
+        version_file_name = os.path.basename(version_file_path)
+        print(f"{Colors.BLUE}{version_file_name} already at version {version}{Colors.ENDC}")
+    else:
+        # Couldn't find version file - warn but continue
+        version_file_name = 'Info.json' if project_type == 'mod' else '.mod.json'
+        print(f"{Colors.WARNING}Warning: Could not find {version_file_name} to sync version{Colors.ENDC}")
 
     # Create package filename
     zip_filename = f"{namespace}-{package_name}-{version}.zip"
@@ -746,7 +1127,28 @@ def do_package(project_name, script_dir, repos_parent, version_override=None):
         shutil.copy2(manifest_path, os.path.join(temp_dir, 'manifest.json'))
         shutil.copy2(readme_path, os.path.join(temp_dir, 'README.md'))
         shutil.copy2(icon_path, os.path.join(temp_dir, 'icon.png'))
-        shutil.copy2(changelog_path, os.path.join(temp_dir, 'CHANGELOG.md'))
+
+        # Strip (unreleased) tag from Changelog
+        with open(changelog_path, 'r', encoding='utf-8') as f:
+            changelog_content = f.read()
+
+        # Strip (unreleased) from version headers
+        changelog_cleaned = re.sub(
+            r'(##\s*v?\d+\.\d+\.\d+)\s*\(unreleased\)',
+            r'\1',
+            changelog_content,
+            flags=re.IGNORECASE
+        )
+
+        # Update source Changelog.md if it was modified
+        if changelog_cleaned != changelog_content:
+            with open(changelog_path, 'w', encoding='utf-8') as f:
+                f.write(changelog_cleaned)
+            print(f"{Colors.GREEN}Removed (unreleased) tag from Changelog.md{Colors.ENDC}")
+
+        # Copy cleaned changelog to package
+        with open(os.path.join(temp_dir, 'CHANGELOG.md'), 'w', encoding='utf-8') as f:
+            f.write(changelog_cleaned)
 
         # Create UMM structure
         umm_base = os.path.join(temp_dir, 'UMM')
@@ -895,7 +1297,7 @@ if args.command is None:
                 sys.exit(0)
         elif len(projects) == 1:
             project_name = projects[0][0]
-            print(f"{Colors.GREEN}Using project: {project_name}{Colors.ENDC}")
+            print(f"{Colors.CYAN}Using project: {project_name}{Colors.ENDC}")
         else:
             # Fallback if questionary not available
             print(f"\n{Colors.CYAN}Available projects in {current_repo}:{Colors.ENDC}")
@@ -944,7 +1346,7 @@ if args.command is None:
                 sys.exit(0)
         elif len(projects) == 1:
             project_name = projects[0][0]
-            print(f"{Colors.GREEN}Using project: {project_name}{Colors.ENDC}")
+            print(f"{Colors.CYAN}Using project: {project_name}{Colors.ENDC}")
         else:
             # Fallback if questionary not available
             print(f"\n{Colors.CYAN}Available projects in {current_repo}:{Colors.ENDC}")
@@ -991,7 +1393,7 @@ def select_project_for_subcommand(repos_parent, require_thunderstore_metadata=Fa
     # Auto-select if only one project
     if len(projects) == 1:
         project_name = projects[0][0]
-        print(f"{Colors.GREEN}Using project: {project_name}{Colors.ENDC}")
+        print(f"{Colors.CYAN}Using project: {project_name}{Colors.ENDC}")
         return project_name
 
     # Show menu if multiple projects
