@@ -5,18 +5,103 @@ import re
 import argparse
 import json
 import xml.etree.ElementTree as ET
+import time
+import tempfile
 
 try:
     import questionary
 except ImportError:
     questionary = None
 
-# Thunderstore dependency versions (update these when new versions are released)
-DEPENDENCY_VERSIONS = {
-    'UMM': '1.0.1',
+try:
+    import urllib.request
+    import urllib.error
+    HAS_URLLIB = True
+except ImportError:
+    HAS_URLLIB = False
+
+# Fallback dependency versions (used if Thunderstore API is unavailable)
+FALLBACK_DEPENDENCY_VERSIONS = {
+    'UMM': '1.0.2',
     'RocketLib': '2.4.0',
     'BroMaker': '1.0.0',  # Placeholder - not yet uploaded
 }
+
+# Thunderstore package info (namespace/package name)
+THUNDERSTORE_PACKAGES = {
+    'UMM': ('UMM', 'UMM'),
+    'RocketLib': ('RocketLib', 'RocketLib'),
+    'BroMaker': ('BroMaker', 'BroMaker'),
+}
+
+# Cache duration: 24 hours (in seconds)
+CACHE_DURATION = 24 * 60 * 60
+
+# Cache file location
+CACHE_FILE = os.path.join(tempfile.gettempdir(), 'broforce_tools_dependency_cache.json')
+
+def fetch_thunderstore_version(namespace, package_name):
+    """Fetch latest version from Thunderstore API
+
+    Returns version string or None if fetch fails
+    """
+    if not HAS_URLLIB:
+        return None
+
+    url = f"https://thunderstore.io/api/experimental/package/{namespace}/{package_name}/"
+
+    try:
+        with urllib.request.urlopen(url, timeout=5) as response:
+            data = json.loads(response.read().decode('utf-8'))
+            return data.get('latest', {}).get('version_number', None)
+    except (urllib.error.URLError, urllib.error.HTTPError, json.JSONDecodeError, TimeoutError):
+        return None
+
+def get_dependency_versions():
+    """Get dependency versions, fetching from Thunderstore API with caching
+
+    Returns dict of {dep_name: version_string}
+    """
+    # Try to load from cache
+    if os.path.exists(CACHE_FILE):
+        try:
+            with open(CACHE_FILE, 'r', encoding='utf-8') as f:
+                cache_data = json.load(f)
+
+            # Check if cache is still valid
+            cache_time = cache_data.get('timestamp', 0)
+            if time.time() - cache_time < CACHE_DURATION:
+                versions = cache_data.get('versions', {})
+                if versions:
+                    return versions
+        except (json.JSONDecodeError, OSError):
+            pass
+
+    # Cache is invalid or doesn't exist, fetch from API
+    versions = {}
+    for dep_name, (namespace, package) in THUNDERSTORE_PACKAGES.items():
+        version = fetch_thunderstore_version(namespace, package)
+        if version:
+            versions[dep_name] = version
+        else:
+            # Fall back to hardcoded version
+            versions[dep_name] = FALLBACK_DEPENDENCY_VERSIONS[dep_name]
+
+    # Save to cache
+    try:
+        cache_data = {
+            'timestamp': time.time(),
+            'versions': versions
+        }
+        with open(CACHE_FILE, 'w', encoding='utf-8') as f:
+            json.dump(cache_data, f, indent=2)
+    except OSError:
+        pass  # Cache save failed, not critical
+
+    return versions
+
+# Get dependency versions (from API or fallback)
+DEPENDENCY_VERSIONS = get_dependency_versions()
 
 # Dependency string format: "Namespace-PackageName-Version"
 DEPENDENCIES = {
@@ -1200,8 +1285,15 @@ parser = argparse.ArgumentParser(
   %(prog)s package
   %(prog)s package "Project Name"
   %(prog)s package --version 1.2.3
+
+  # Clear dependency version cache (force fresh API fetch on next run)
+  %(prog)s --clear-cache
 '''
 )
+
+# Global arguments
+parser.add_argument('--clear-cache', action='store_true',
+                    help='Clear the dependency version cache and exit')
 
 subparsers = parser.add_subparsers(dest='command', help='Command to run')
 
@@ -1222,6 +1314,19 @@ package_parser.add_argument('project_name', nargs='?', help='Name of the project
 package_parser.add_argument('--version', help='Override version (default: read from Changelog.md)')
 
 args = parser.parse_args()
+
+# Handle --clear-cache flag
+if args.clear_cache:
+    if os.path.exists(CACHE_FILE):
+        try:
+            os.remove(CACHE_FILE)
+            print(f"{Colors.GREEN}Dependency cache cleared: {CACHE_FILE}{Colors.ENDC}")
+        except OSError as e:
+            print(f"{Colors.FAIL}Error clearing cache: {e}{Colors.ENDC}")
+            sys.exit(1)
+    else:
+        print(f"{Colors.BLUE}Cache file does not exist: {CACHE_FILE}{Colors.ENDC}")
+    sys.exit(0)
 
 # Get paths needed by all modes
 script_dir = os.path.dirname(os.path.abspath(__file__))
