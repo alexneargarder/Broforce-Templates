@@ -823,6 +823,7 @@ def do_init_thunderstore(project_name, script_dir, repos_parent):
         # Replace placeholders
         readme_content = readme_content.replace('PROJECT_NAME', project_name)
         readme_content = readme_content.replace('DESCRIPTION_PLACEHOLDER', description)
+        readme_content = readme_content.replace('FEATURES_PLACEHOLDER', '*Describe your mod\'s features here*')
         readme_content = readme_content.replace('AUTHOR_NAME', namespace)
         readme_content = readme_content.replace('REPO_NAME', output_repo)
 
