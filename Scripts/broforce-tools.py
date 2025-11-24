@@ -660,11 +660,26 @@ def find_all_projects(repos_parent, require_thunderstore_metadata=False, filter_
         # Check for single-project repo structure: {repo}/Release/
         release_dir = os.path.join(repo_path, 'Release')
         if os.path.exists(release_dir) and os.path.isdir(release_dir):
-            # Single-project repo: use repo name as project name
+            # Single-project repo: find the actual project directory
+            # First try repo name (e.g., RocketLib/RocketLib/)
             project_name = repo
-
-            # Check if project source exists
             project_path = os.path.join(repo_path, project_name)
+
+            # If that doesn't exist, search for directories with _ModContent
+            if not os.path.exists(project_path):
+                try:
+                    for item in os.listdir(repo_path):
+                        item_path = os.path.join(repo_path, item)
+                        if os.path.isdir(item_path):
+                            modcontent_path = os.path.join(item_path, '_ModContent')
+                            if os.path.exists(modcontent_path):
+                                project_name = item
+                                project_path = item_path
+                                break
+                except (OSError, FileNotFoundError):
+                    pass
+
+            # Verify we found a valid project
             if os.path.exists(project_path) and os.path.isdir(project_path):
                 # If requiring Thunderstore metadata, check for manifest.json
                 if require_thunderstore_metadata:
@@ -725,11 +740,15 @@ def do_init_thunderstore(project_name, script_dir, repos_parent):
 
         # Check for single-project repo: {repo}/Release/
         potential_release_single = os.path.join(repo_path, 'Release')
-        if repo == project_name and os.path.exists(potential_release_single):
-            project_path = potential_project
-            releases_path = potential_release_single
-            output_repo = repo
-            break
+        if os.path.exists(potential_release_single) and os.path.isdir(potential_release_single):
+            # For single-project repos, the Release directory exists
+            # Check if the project we found is the actual project in this repo
+            # (could be repo name matches project name, or project is subdirectory)
+            if os.path.exists(potential_project) and os.path.isdir(potential_project):
+                project_path = potential_project
+                releases_path = potential_release_single
+                output_repo = repo
+                break
 
         # Check for multi-project repo: {repo}/Releases/{project}/
         potential_releases_multi = os.path.join(repo_path, 'Releases', project_name)
@@ -881,11 +900,15 @@ def do_package(project_name, script_dir, repos_parent, version_override=None):
 
         # Check for single-project repo: {repo}/Release/
         potential_release_single = os.path.join(repo_path, 'Release')
-        if repo == project_name and os.path.exists(potential_release_single):
-            project_path = potential_project
-            releases_path = potential_release_single
-            output_repo = repo
-            break
+        if os.path.exists(potential_release_single) and os.path.isdir(potential_release_single):
+            # For single-project repos, the Release directory exists
+            # Check if the project we found is the actual project in this repo
+            # (could be repo name matches project name, or project is subdirectory)
+            if os.path.exists(potential_project) and os.path.isdir(potential_project):
+                project_path = potential_project
+                releases_path = potential_release_single
+                output_repo = repo
+                break
 
         # Check for multi-project repo: {repo}/Releases/{project}/
         potential_releases_multi = os.path.join(repo_path, 'Releases', project_name)
