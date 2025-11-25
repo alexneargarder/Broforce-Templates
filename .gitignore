@@ -371,3 +371,6 @@ CLAUDE.md
 settings.local.json
 *settings.json
 Settings.xml
+
+# broforce-tools config (user-specific)
+Scripts/broforce-tools.json

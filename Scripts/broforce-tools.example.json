@@ -1,0 +1,7 @@
+{
+  "repos": ["BroforceMods", "RocketLib", "Bro-Maker"],
+  "defaults": {
+    "namespace": "AlexN",
+    "website_url": "https://github.com/alexneargarder/BroforceMods"
+  }
+}
