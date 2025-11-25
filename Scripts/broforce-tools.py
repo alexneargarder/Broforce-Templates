@@ -1,9 +1,16 @@
+# PYTHON_ARGCOMPLETE_OK
 import shutil, errno
 import os, fnmatch
 import sys
 import re
 import argparse
 import json
+
+try:
+    import argcomplete
+    HAS_ARGCOMPLETE = True
+except ImportError:
+    HAS_ARGCOMPLETE = False
 import xml.etree.ElementTree as ET
 import time
 import tempfile
@@ -11,7 +18,8 @@ import tempfile
 try:
     import questionary
 except ImportError:
-    questionary = None
+    print("Error: questionary package is required. Install with: pip install questionary")
+    sys.exit(1)
 
 try:
     import urllib.request
@@ -39,6 +47,67 @@ CACHE_DURATION = 24 * 60 * 60
 
 # Cache file location
 CACHE_FILE = os.path.join(tempfile.gettempdir(), 'broforce_tools_dependency_cache.json')
+
+# Config file location (in same directory as script)
+CONFIG_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'broforce-tools.json')
+
+def load_config():
+    """Load configuration from config file
+
+    Returns dict with 'repos' key (list of repo names)
+    """
+    if os.path.exists(CONFIG_FILE):
+        try:
+            with open(CONFIG_FILE, 'r', encoding='utf-8') as f:
+                return json.load(f)
+        except (json.JSONDecodeError, OSError):
+            pass
+    return {'repos': []}
+
+def save_config(config):
+    """Save configuration to config file"""
+    try:
+        with open(CONFIG_FILE, 'w', encoding='utf-8') as f:
+            json.dump(config, f, indent=2)
+        return True
+    except OSError:
+        return False
+
+def get_configured_repos():
+    """Get list of configured repos"""
+    config = load_config()
+    return config.get('repos', [])
+
+
+def get_repos_to_search(repos_parent, use_all_repos=False):
+    """Get list of repos to search for projects.
+
+    Args:
+        repos_parent: Parent directory containing all repos
+        use_all_repos: If True, always use configured repos
+
+    Returns:
+        Tuple of (repos_list, is_single_repo) where is_single_repo indicates
+        if we're searching just the current repo (affects display formatting)
+    """
+    if use_all_repos:
+        repos = get_configured_repos()
+        if not repos:
+            return None, False
+        return repos, False
+
+    # Try current repo first
+    current_repo = detect_current_repo(repos_parent)
+    if current_repo:
+        return [current_repo], True
+
+    # Fall back to configured repos
+    repos = get_configured_repos()
+    if repos:
+        return repos, False
+
+    return None, False
+
 
 def fetch_thunderstore_version(namespace, package_name):
     """Fetch latest version from Thunderstore API
@@ -240,7 +309,9 @@ def get_broforce_path(repos_parent):
     print(f"  - LocalBroforcePath.props in: {repos_parent}")
     print(f"  - BroforceGlobal.props in: {repos_parent}")
     print()
-    path = input("Enter Broforce installation path: ").strip()
+    path = questionary.text("Enter Broforce installation path:").ask()
+    if not path:
+        sys.exit(0)
     if not os.path.exists(path):
         print(f"{Colors.FAIL}Error: Path does not exist: {path}{Colors.ENDC}")
         sys.exit(1)
@@ -298,14 +369,16 @@ def detect_dependencies_from_csproj(project_path):
     """
     dependencies = [DEPENDENCIES['UMM']]  # Always include UMM
 
-    # Find .csproj file
+    # Find .csproj file (check up to 2 levels deep)
     csproj_files = []
     for root, dirs, files in os.walk(project_path):
+        # Calculate depth from project_path
+        depth = root.replace(project_path, '').count(os.sep)
+        if depth > 1:
+            continue
         for file in files:
             if file.endswith('.csproj'):
                 csproj_files.append(os.path.join(root, file))
-        # Only check first level
-        break
 
     if not csproj_files:
         return dependencies
@@ -408,8 +481,8 @@ def get_version_from_changelog(changelog_path):
 
         # Try patterns in order of preference
         patterns = [
-            r'##\s*v?(\d+\.\d+\.\d+)\s*\(unreleased\)',  # ## v1.0.0 (unreleased)
-            r'##\s*v?(\d+\.\d+\.\d+)',  # ## v1.0.0 or ## 1.0.0
+            r'##\s*v?(\d+\.\d+\.\d+):?\s*\(unreleased\)',  # ## v1.0.0 (unreleased) or ## v1.0.0: (unreleased)
+            r'##\s*v?(\d+\.\d+\.\d+):?',  # ## v1.0.0 or ## v1.0.0:
         ]
 
         for pattern in patterns:
@@ -626,96 +699,173 @@ def detect_current_repo(repos_parent):
 
     return None
 
-def find_all_projects(repos_parent, require_thunderstore_metadata=False, filter_repo=None):
-    """Find all valid projects across all repos (or filtered to one repo)
-
-    Handles two repo structures:
-    1. Multi-project repos: {repo}/Releases/{project}/ (e.g., BroforceMods)
-    2. Single-project repos: {repo}/Release/ (e.g., RocketLib, BroMaker)
+def find_projects(repos_parent, repos, require_metadata=False, exclude_with_metadata=False):
+    """Find projects in the given repos.
 
     Args:
         repos_parent: Parent directory containing all repos
-        require_thunderstore_metadata: If True, only return projects with manifest.json
-        filter_repo: If provided, only search this repo name
+        repos: List of repo names to search
+        require_metadata: If True, only return projects WITH Thunderstore metadata
+        exclude_with_metadata: If True, only return projects WITHOUT Thunderstore metadata
+
+    Returns:
+        List of (project_name, repo_name) tuples, sorted by project name
     """
+    skip_dirs = {'bin', 'obj', 'packages', 'Releases', 'Release', 'libs', '.vs', '.git'}
     projects = []
 
-    # Get all repos in parent directory
-    try:
-        if filter_repo:
-            repos = [filter_repo]
-        else:
-            repos = [d for d in os.listdir(repos_parent) if os.path.isdir(os.path.join(repos_parent, d))]
-    except (OSError, FileNotFoundError):
-        return projects
-
-    # Search each repo for projects
     for repo in repos:
         repo_path = os.path.join(repos_parent, repo)
-
-        # Skip if repo doesn't exist
         if not os.path.exists(repo_path):
             continue
 
-        # Check for single-project repo structure: {repo}/Release/
-        release_dir = os.path.join(repo_path, 'Release')
-        if os.path.exists(release_dir) and os.path.isdir(release_dir):
-            # Single-project repo: find the actual project directory
-            # First try repo name (e.g., RocketLib/RocketLib/)
-            project_name = repo
-            project_path = os.path.join(repo_path, project_name)
+        try:
+            for item in os.listdir(repo_path):
+                # Skip hidden/system directories
+                if item.startswith('.') or item.startswith('_') or item in skip_dirs:
+                    continue
 
-            # If that doesn't exist, search for directories with _ModContent
-            if not os.path.exists(project_path):
+                item_path = os.path.join(repo_path, item)
+                if not os.path.isdir(item_path):
+                    continue
+
+                # Check for .csproj in project dir or one level down
+                has_csproj = False
                 try:
-                    for item in os.listdir(repo_path):
-                        item_path = os.path.join(repo_path, item)
-                        if os.path.isdir(item_path):
-                            modcontent_path = os.path.join(item_path, '_ModContent')
-                            if os.path.exists(modcontent_path):
-                                project_name = item
-                                project_path = item_path
-                                break
+                    for f in os.listdir(item_path):
+                        if f.endswith('.csproj'):
+                            has_csproj = True
+                            break
+                        subpath = os.path.join(item_path, f)
+                        if os.path.isdir(subpath):
+                            try:
+                                for sf in os.listdir(subpath):
+                                    if sf.endswith('.csproj'):
+                                        has_csproj = True
+                                        break
+                            except (OSError, FileNotFoundError):
+                                pass
+                        if has_csproj:
+                            break
                 except (OSError, FileNotFoundError):
-                    pass
+                    continue
 
-            # Verify we found a valid project
-            if os.path.exists(project_path) and os.path.isdir(project_path):
-                # If requiring Thunderstore metadata, check for manifest.json
-                if require_thunderstore_metadata:
-                    manifest_path = os.path.join(release_dir, 'manifest.json')
-                    if os.path.exists(manifest_path):
-                        projects.append((project_name, repo))
-                else:
-                    projects.append((project_name, repo))
+                if not has_csproj:
+                    continue
 
-        # Check for multi-project repo structure: {repo}/Releases/{project}/
-        releases_dir = os.path.join(repo_path, 'Releases')
-        if os.path.exists(releases_dir):
-            # Multi-project repo
-            try:
-                for item in os.listdir(releases_dir):
-                    release_path = os.path.join(releases_dir, item)
-                    if not os.path.isdir(release_path):
-                        continue
+                # Check for Thunderstore metadata
+                has_metadata = _project_has_metadata(repos_parent, repo, item)
 
-                    # Check if corresponding project directory exists
-                    project_path = os.path.join(repo_path, item)
-                    if not os.path.exists(project_path) or not os.path.isdir(project_path):
-                        continue
+                # Apply filters
+                if require_metadata and not has_metadata:
+                    continue
+                if exclude_with_metadata and has_metadata:
+                    continue
 
-                    # If requiring Thunderstore metadata, check for manifest.json
-                    if require_thunderstore_metadata:
-                        manifest_path = os.path.join(release_path, 'manifest.json')
-                        if not os.path.exists(manifest_path):
-                            continue
+                projects.append((item, repo))
+        except (OSError, FileNotFoundError):
+            continue
 
-                    projects.append((item, repo))
-            except (OSError, FileNotFoundError):
-                continue
-
-    # Sort by project name
     return sorted(projects, key=lambda x: x[0])
+
+
+def _project_has_metadata(repos_parent, repo, project_name):
+    """Check if a project has Thunderstore metadata (manifest.json).
+
+    Handles both repo structures:
+    - Multi-project: {repo}/Releases/{project}/manifest.json
+    - Single-project: {repo}/Release/manifest.json (any project in repo uses this)
+    """
+    repo_path = os.path.join(repos_parent, repo)
+
+    # Check multi-project structure
+    multi_manifest = os.path.join(repo_path, 'Releases', project_name, 'manifest.json')
+    if os.path.exists(multi_manifest):
+        return True
+
+    # Check single-project structure - if Release/ exists with manifest, any project has metadata
+    single_manifest = os.path.join(repo_path, 'Release', 'manifest.json')
+    if os.path.exists(single_manifest):
+        return True
+
+    return False
+
+
+def select_projects_interactive(repos_parent, mode, use_all_repos=False, allow_batch=True):
+    """Interactive project selection for commands.
+
+    Args:
+        repos_parent: Parent directory containing all repos
+        mode: 'package' (require metadata) or 'init' (exclude metadata)
+        use_all_repos: If True, search all configured repos
+        allow_batch: If True, show "all" option for batch operations
+
+    Returns:
+        List of (project_name, repo_name) tuples (single item if not batch)
+        Returns empty list if user cancels
+    """
+    # Get repos to search
+    repos, is_single_repo = get_repos_to_search(repos_parent, use_all_repos)
+    if not repos:
+        print(f"{Colors.FAIL}Error: No repos configured. Use --add-repo to add repos.{Colors.ENDC}")
+        return []
+
+    # Find projects based on mode
+    if mode == 'package':
+        projects = find_projects(repos_parent, repos, require_metadata=True)
+        no_projects_msg = "No projects with Thunderstore metadata found"
+        no_projects_hint = "Run: broforce-tools init-thunderstore"
+        batch_label = "Package all"
+    else:  # init
+        projects = find_projects(repos_parent, repos, exclude_with_metadata=True)
+        no_projects_msg = "No projects needing Thunderstore initialization found"
+        no_projects_hint = "All projects already have metadata"
+        batch_label = "Initialize all"
+
+    if not projects:
+        print(f"{Colors.FAIL}Error: {no_projects_msg}{Colors.ENDC}")
+        print(no_projects_hint)
+        return []
+
+    # Auto-select if only one project
+    if len(projects) == 1:
+        project_name, repo = projects[0]
+        print(f"{Colors.CYAN}Using project: {project_name}{Colors.ENDC}")
+        return [projects[0]]
+
+    # Build choices
+    if allow_batch:
+        choices = [f"{batch_label} ({len(projects)} projects)"]
+    else:
+        choices = []
+
+    if is_single_repo:
+        choices.extend([name for name, repo in projects])
+    else:
+        choices.extend([f"{name} ({repo})" for name, repo in projects])
+
+    # Show menu
+    prompt = f"Select project:" if not is_single_repo else f"Select project from {repos[0]}:"
+    selection = questionary.select(prompt, choices=choices).ask()
+
+    if not selection:  # User cancelled
+        return []
+
+    # Handle batch selection
+    if allow_batch and selection.startswith(batch_label.split()[0]):
+        return projects
+
+    # Extract project from selection
+    if is_single_repo:
+        return [(selection, repos[0])]
+    else:
+        project_name = selection.rsplit(' (', 1)[0]
+        # Find the matching project tuple
+        for p in projects:
+            if p[0] == project_name:
+                return [p]
+        return []
+
 
 def do_init_thunderstore(project_name, script_dir, repos_parent):
     """Initialize Thunderstore metadata for an existing project"""
@@ -776,29 +926,55 @@ def do_init_thunderstore(project_name, script_dir, repos_parent):
     # Prompt for Thunderstore metadata
     print(f"\n{Colors.HEADER}Enter Thunderstore package information:{Colors.ENDC}")
 
+    # Load defaults from config
+    config = load_config()
+    defaults = config.get('defaults', {})
+    default_namespace = defaults.get('namespace', '')
+    default_website = defaults.get('website_url', '')
+
     # Namespace
-    namespace = input(f"{Colors.CYAN}Namespace/Author (e.g., AlexNeargarder): {Colors.ENDC}").strip()
-    valid, msg = validate_package_name(namespace)
-    if not valid:
-        print(f"{Colors.FAIL}Error: Invalid namespace - {msg}{Colors.ENDC}")
-        sys.exit(1)
+    if default_namespace:
+        namespace = questionary.text(
+            f"Namespace/Author [{default_namespace}]:",
+            default=default_namespace,
+            validate=lambda text: validate_package_name(text)[0] if text else True
+        ).ask()
+        if not namespace:
+            namespace = default_namespace
+    else:
+        namespace = questionary.text(
+            "Namespace/Author (e.g., AlexNeargarder):",
+            validate=lambda text: validate_package_name(text)[0]
+        ).ask()
+        if not namespace:
+            sys.exit(0)
 
     # Package name
     suggested_name = sanitize_package_name(project_name)
-    package_name = input(f"{Colors.CYAN}Package name [{suggested_name}]: {Colors.ENDC}").strip() or suggested_name
-    valid, msg = validate_package_name(package_name)
-    if not valid:
-        print(f"{Colors.FAIL}Error: Invalid package name - {msg}{Colors.ENDC}")
-        sys.exit(1)
+    package_name = questionary.text(
+        f"Package name [{suggested_name}]:",
+        default=suggested_name,
+        validate=lambda text: validate_package_name(text)[0] if text else True
+    ).ask()
+    if not package_name:
+        package_name = suggested_name
 
     # Description
-    description = input(f"{Colors.CYAN}Description (max 250 chars): {Colors.ENDC}").strip()
+    description = questionary.text("Description (max 250 chars):").ask() or ""
     if len(description) > 250:
         print(f"{Colors.WARNING}Warning: Description truncated to 250 characters{Colors.ENDC}")
         description = description[:250]
 
     # Website URL
-    website_url = input(f"{Colors.CYAN}Website/GitHub URL: {Colors.ENDC}").strip()
+    if default_website:
+        website_url = questionary.text(
+            f"Website/GitHub URL [{default_website}]:",
+            default=default_website
+        ).ask()
+        if not website_url:
+            website_url = default_website
+    else:
+        website_url = questionary.text("Website/GitHub URL:").ask() or ""
 
     # Check if Changelog.md exists, create if missing
     changelog_path = os.path.join(releases_path, 'Changelog.md')
@@ -831,11 +1007,13 @@ def do_init_thunderstore(project_name, script_dir, repos_parent):
 
     print(f"{Colors.GREEN}Created manifest.json{Colors.ENDC}")
 
-    # Copy README template
+    # Copy README template (skip if already exists)
     readme_template = os.path.join(template_repo_dir, 'ThunderstorePackage', 'README.md')
     readme_dest = os.path.join(releases_path, 'README.md')
 
-    if os.path.exists(readme_template):
+    if os.path.exists(readme_dest):
+        print(f"{Colors.BLUE}README.md already exists, skipping{Colors.ENDC}")
+    elif os.path.exists(readme_template):
         with open(readme_template, 'r', encoding='utf-8') as f:
             readme_content = f.read()
 
@@ -853,11 +1031,13 @@ def do_init_thunderstore(project_name, script_dir, repos_parent):
     else:
         print(f"{Colors.WARNING}Warning: README template not found at {readme_template}{Colors.ENDC}")
 
-    # Copy icon placeholder
+    # Copy icon placeholder (skip if already exists)
     icon_template = os.path.join(template_repo_dir, 'ThunderstorePackage', 'icon.png')
     icon_dest = os.path.join(releases_path, 'icon.png')
 
-    if os.path.exists(icon_template):
+    if os.path.exists(icon_dest):
+        print(f"{Colors.BLUE}icon.png already exists, skipping{Colors.ENDC}")
+    elif os.path.exists(icon_template):
         shutil.copy2(icon_template, icon_dest)
         print(f"{Colors.GREEN}Created icon.png{Colors.ENDC}")
         print(f"{Colors.WARNING}⚠️  Replace icon.png with a custom 256x256 image!{Colors.ENDC}")
@@ -1022,14 +1202,10 @@ def do_package(project_name, script_dir, repos_parent, version_override=None):
             print(f"{Colors.CYAN}Highest version found: {version} (from {highest_source}){Colors.ENDC}")
             print(f"\n{Colors.WARNING}Did you forget to update Changelog.md?{Colors.ENDC}")
 
-            if questionary:
-                continue_package = questionary.confirm(
-                    f"Continue packaging with version {version}?",
-                    default=False
-                ).ask()
-            else:
-                response = input(f"\nContinue packaging with version {version}? (y/n): ").strip().lower()
-                continue_package = response in ['y', 'yes']
+            continue_package = questionary.confirm(
+                f"Continue packaging with version {version}?",
+                default=False
+            ).ask()
 
             if not continue_package:
                 print(f"\n{Colors.CYAN}Packaging cancelled.{Colors.ENDC}")
@@ -1048,28 +1224,16 @@ def do_package(project_name, script_dir, repos_parent, version_override=None):
         print(f"\n{Colors.WARNING}Warning: No author/namespace set in manifest.json{Colors.ENDC}")
         print(f"{Colors.CYAN}The author field is used for the package filename and Thunderstore namespace.{Colors.ENDC}")
 
-        if questionary:
-            set_author = questionary.confirm(
-                "Set author name now?",
-                default=True
-            ).ask()
-        else:
-            response = input("\nSet author name now? (y/n): ").strip().lower()
-            set_author = response in ['y', 'yes']
+        set_author = questionary.confirm(
+            "Set author name now?",
+            default=True
+        ).ask()
 
         if set_author:
-            if questionary:
-                namespace = questionary.text(
-                    "Enter namespace/author (alphanumeric + underscores only):",
-                    validate=lambda text: validate_package_name(text)[0]
-                ).ask()
-            else:
-                while True:
-                    namespace = input("Enter namespace/author (alphanumeric + underscores only): ").strip()
-                    valid, msg = validate_package_name(namespace)
-                    if valid:
-                        break
-                    print(f"{Colors.FAIL}Invalid: {msg}{Colors.ENDC}")
+            namespace = questionary.text(
+                "Enter namespace/author (alphanumeric + underscores only):",
+                validate=lambda text: validate_package_name(text)[0]
+            ).ask()
 
             manifest_data['author'] = namespace
             print(f"{Colors.GREEN}Author set to: {namespace}{Colors.ENDC}")
@@ -1109,14 +1273,10 @@ def do_package(project_name, script_dir, repos_parent, version_override=None):
         for old_dep, new_dep in outdated_deps:
             print(f"  {old_dep} → {new_dep}")
 
-        if questionary:
-            update = questionary.confirm(
-                "Update dependencies to latest versions?",
-                default=True
-            ).ask()
-        else:
-            response = input("\nUpdate dependencies to latest versions? (y/n): ").strip().lower()
-            update = response in ['y', 'yes']
+        update = questionary.confirm(
+            "Update dependencies to latest versions?",
+            default=True
+        ).ask()
 
         if update:
             manifest_data['dependencies'] = updated_deps
@@ -1141,14 +1301,10 @@ def do_package(project_name, script_dir, repos_parent, version_override=None):
         for dep in missing_deps:
             print(f"  + {dep}")
 
-        if questionary:
-            add_deps = questionary.confirm(
-                "Add missing dependencies to manifest?",
-                default=True
-            ).ask()
-        else:
-            response = input("\nAdd missing dependencies to manifest? (y/n): ").strip().lower()
-            add_deps = response in ['y', 'yes']
+        add_deps = questionary.confirm(
+            "Add missing dependencies to manifest?",
+            default=True
+        ).ask()
 
         if add_deps:
             # Add missing dependencies to the list
@@ -1197,14 +1353,10 @@ def do_package(project_name, script_dir, repos_parent, version_override=None):
         print(f"\n{Colors.WARNING}Package {zip_filename} already exists{Colors.ENDC}")
 
         # Prompt user to confirm overwrite
-        if questionary:
-            overwrite = questionary.confirm(
-                "Overwrite existing package?",
-                default=True
-            ).ask()
-        else:
-            response = input("Overwrite existing package? (y/n): ").strip().lower()
-            overwrite = response in ['y', 'yes']
+        overwrite = questionary.confirm(
+            "Overwrite existing package?",
+            default=True
+        ).ask()
 
         if not overwrite:
             print(f"\n{Colors.CYAN}Packaging cancelled.{Colors.ENDC}")
@@ -1243,7 +1395,7 @@ def do_package(project_name, script_dir, repos_parent, version_override=None):
 
         # Strip (unreleased) from version headers
         changelog_cleaned = re.sub(
-            r'(##\s*v?\d+\.\d+\.\d+)\s*\(unreleased\)',
+            r'(##\s*v?\d+\.\d+\.\d+:?)\s*\(unreleased\)',
             r'\1',
             changelog_content,
             flags=re.IGNORECASE
@@ -1312,12 +1464,33 @@ parser = argparse.ArgumentParser(
 
   # Clear dependency version cache (force fresh API fetch on next run)
   %(prog)s --clear-cache
+
+  # Add current repo to configured repos list
+  %(prog)s --add-repo
+  %(prog)s --add-repo "RepoName"
+
+  # Work with all configured repos
+  %(prog)s --all-repos
+  %(prog)s package --all-repos
+  %(prog)s init-thunderstore --all-repos
 '''
 )
 
 # Global arguments
 parser.add_argument('--clear-cache', action='store_true',
                     help='Clear the dependency version cache and exit')
+parser.add_argument('--add-repo', nargs='?', const='', metavar='REPO',
+                    help='Add a repo to configured repos list (uses current repo if not specified)')
+parser.add_argument('--all-repos', action='store_true',
+                    help='Show projects from all configured repos (for package/init-thunderstore)')
+
+# Hidden arguments for shell completion
+parser.add_argument('--list-projects', choices=['package', 'init-thunderstore'],
+                    help=argparse.SUPPRESS)
+parser.add_argument('--list-repos', action='store_true',
+                    help=argparse.SUPPRESS)
+parser.add_argument('--list-templates', action='store_true',
+                    help=argparse.SUPPRESS)
 
 subparsers = parser.add_subparsers(dest='command', help='Command to run')
 
@@ -1331,12 +1504,18 @@ create_parser.add_argument('-o', '--output-repo', help='Name of the repository t
 # init-thunderstore subcommand
 init_parser = subparsers.add_parser('init-thunderstore', help='Initialize Thunderstore metadata for a project')
 init_parser.add_argument('project_name', nargs='?', help='Name of the project (optional: auto-detect from current repo)')
+init_parser.add_argument('--all-repos', action='store_true',
+                         help='Show projects from all configured repos')
 
 # package subcommand
 package_parser = subparsers.add_parser('package', help='Create Thunderstore package')
 package_parser.add_argument('project_name', nargs='?', help='Name of the project (optional: auto-detect from current repo)')
 package_parser.add_argument('--version', help='Override version (default: read from Changelog.md)')
+package_parser.add_argument('--all-repos', action='store_true',
+                            help='Show projects from all configured repos')
 
+if HAS_ARGCOMPLETE:
+    argcomplete.autocomplete(parser)
 args = parser.parse_args()
 
 # Handle --clear-cache flag
@@ -1352,6 +1531,78 @@ if args.clear_cache:
         print(f"{Colors.BLUE}Cache file does not exist: {CACHE_FILE}{Colors.ENDC}")
     sys.exit(0)
 
+# Handle --add-repo flag
+if args.add_repo is not None:
+    # Get paths needed for repo detection
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    template_repo_dir = os.path.dirname(script_dir)
+    repos_parent = os.path.dirname(template_repo_dir)
+
+    # Determine repo name to add
+    if args.add_repo == '':
+        # No argument provided, detect from current directory
+        repo_name = detect_current_repo(repos_parent)
+        if not repo_name:
+            print(f"{Colors.FAIL}Error: Could not detect current repo from working directory{Colors.ENDC}")
+            print(f"Run from within a repo directory, or specify repo name: --add-repo RepoName")
+            sys.exit(1)
+    else:
+        repo_name = args.add_repo
+
+    # Load current config and add repo
+    config = load_config()
+    repos = config.get('repos', [])
+
+    if repo_name in repos:
+        print(f"{Colors.BLUE}'{repo_name}' is already in configured repos{Colors.ENDC}")
+    else:
+        repos.append(repo_name)
+        config['repos'] = repos
+        if save_config(config):
+            print(f"{Colors.GREEN}Added '{repo_name}' to configured repos{Colors.ENDC}")
+        else:
+            print(f"{Colors.FAIL}Error: Failed to save config file{Colors.ENDC}")
+            sys.exit(1)
+
+    print(f"\n{Colors.CYAN}Configured repos:{Colors.ENDC}")
+    for r in repos:
+        print(f"  - {r}")
+    sys.exit(0)
+
+# Get paths needed by completion handlers
+script_dir = os.path.dirname(os.path.abspath(__file__))
+template_repo_dir = os.path.dirname(script_dir)
+repos_parent = os.path.dirname(template_repo_dir)
+
+# Handle --list-templates (for shell completion)
+if args.list_templates:
+    print('mod')
+    print('bro')
+    sys.exit(0)
+
+# Handle --list-repos (for shell completion)
+if args.list_repos:
+    config = load_config()
+    for repo in config.get('repos', []):
+        print(repo)
+    sys.exit(0)
+
+# Handle --list-projects (for shell completion)
+if args.list_projects:
+    repos, _ = get_repos_to_search(repos_parent, use_all_repos=False)
+    if not repos:
+        sys.exit(0)
+
+    if args.list_projects == 'package':
+        projects = find_projects(repos_parent, repos, require_metadata=True)
+    else:
+        # init-thunderstore: exclude projects that already have metadata
+        projects = find_projects(repos_parent, repos, exclude_with_metadata=True)
+
+    for name, repo in projects:
+        print(name)
+    sys.exit(0)
+
 # Get paths needed by all modes
 script_dir = os.path.dirname(os.path.abspath(__file__))
 template_repo_dir = os.path.dirname(script_dir)
@@ -1362,208 +1613,67 @@ template_repo_name = os.path.basename(template_repo_dir)
 if args.command is None:
     print(f"{Colors.HEADER}Broforce Mod Tools{Colors.ENDC}\n")
 
-    # Use questionary for main menu if available
-    if questionary:
-        choice = questionary.select(
-            "What would you like to do?",
-            choices=[
-                "Create new mod / bro project",
-                "Setup Thunderstore metadata for an existing project",
-                "Package for releasing on Thunderstore"
-            ]
-        ).ask()
+    choice = questionary.select(
+        "What would you like to do?",
+        choices=[
+            "Create new mod / bro project",
+            "Setup Thunderstore metadata for an existing project",
+            "Package for releasing on Thunderstore",
+            "Show help"
+        ]
+    ).ask()
 
-        if not choice:  # User cancelled
-            sys.exit(0)
+    if not choice:  # User cancelled
+        sys.exit(0)
 
-        # Map selection to choice number
-        if choice == "Create new mod / bro project":
-            choice = "1"
-        elif choice == "Setup Thunderstore metadata for an existing project":
-            choice = "2"
-        else:
-            choice = "3"
-    else:
-        # Fallback if questionary not available
-        print(f"{Colors.CYAN}What would you like to do?{Colors.ENDC}")
-        print(f"{Colors.CYAN}1.{Colors.ENDC} Create new mod / bro project")
-        print(f"{Colors.CYAN}2.{Colors.ENDC} Setup Thunderstore metadata for an existing project")
-        print(f"{Colors.CYAN}3.{Colors.ENDC} Package for releasing on Thunderstore")
-        choice = input("\nEnter your choice (1-3): ").strip()
-
-    if choice == "1":
+    if choice == "Show help":
+        parser.print_help()
+        sys.exit(0)
+    elif choice == "Create new mod / bro project":
         # Set command to 'create' to continue to create project mode below
         args.command = 'create'
         args.type = None
         args.name = None
         args.author = None
         args.output_repo = None
-    elif choice == "2":
-        # Detect current repo
-        current_repo = detect_current_repo(repos_parent)
-
-        if not current_repo:
-            print(f"{Colors.FAIL}Error: Please run this command from within a repo directory{Colors.ENDC}")
-            print(f"(e.g., C:\\Users\\Alex\\repos\\BroforceMods\\)")
-            sys.exit(1)
-
-        # Find projects in current repo only
-        projects = find_all_projects(repos_parent, filter_repo=current_repo)
-
-        if not projects:
-            print(f"{Colors.FAIL}Error: No projects found in {current_repo}{Colors.ENDC}")
-            sys.exit(1)
-
-        # Select project
-        if questionary and len(projects) > 1:
-            # Only show project names since they're all from same repo
-            choices = [name for name, repo in projects]
-            project_name = questionary.select(
-                f"Select project from {current_repo}:",
-                choices=choices
-            ).ask()
-            if not project_name:  # User cancelled
-                sys.exit(0)
-        elif len(projects) == 1:
-            project_name = projects[0][0]
-            print(f"{Colors.CYAN}Using project: {project_name}{Colors.ENDC}")
-        else:
-            # Fallback if questionary not available
-            print(f"\n{Colors.CYAN}Available projects in {current_repo}:{Colors.ENDC}")
-            for i, (name, repo) in enumerate(projects, 1):
-                print(f"  {i}. {name}")
-            selection = input(f"\nEnter project number (1-{len(projects)}): ").strip()
-            try:
-                idx = int(selection) - 1
-                if 0 <= idx < len(projects):
-                    project_name = projects[idx][0]
-                else:
-                    print(f"{Colors.FAIL}Invalid selection{Colors.ENDC}")
-                    sys.exit(1)
-            except ValueError:
-                print(f"{Colors.FAIL}Invalid input{Colors.ENDC}")
-                sys.exit(1)
-
-        do_init_thunderstore(project_name, script_dir, repos_parent)
-        sys.exit(0)
-    elif choice == "3":
-        # Detect current repo
-        current_repo = detect_current_repo(repos_parent)
-
-        if not current_repo:
-            print(f"{Colors.FAIL}Error: Please run this command from within a repo directory{Colors.ENDC}")
-            print(f"(e.g., C:\\Users\\Alex\\repos\\BroforceMods\\)")
-            sys.exit(1)
-
-        # Find projects with Thunderstore metadata in current repo only
-        projects = find_all_projects(repos_parent, require_thunderstore_metadata=True, filter_repo=current_repo)
-
-        if not projects:
-            print(f"{Colors.FAIL}Error: No projects with Thunderstore metadata found in {current_repo}{Colors.ENDC}")
-            print(f"Run option 2 to setup Thunderstore metadata for a project first")
-            sys.exit(1)
-
-        # Select project
-        if questionary and len(projects) > 1:
-            # Only show project names since they're all from same repo
-            choices = [name for name, repo in projects]
-            project_name = questionary.select(
-                f"Select project from {current_repo}:",
-                choices=choices
-            ).ask()
-            if not project_name:  # User cancelled
-                sys.exit(0)
-        elif len(projects) == 1:
-            project_name = projects[0][0]
-            print(f"{Colors.CYAN}Using project: {project_name}{Colors.ENDC}")
-        else:
-            # Fallback if questionary not available
-            print(f"\n{Colors.CYAN}Available projects in {current_repo}:{Colors.ENDC}")
-            for i, (name, repo) in enumerate(projects, 1):
-                print(f"  {i}. {name}")
-            selection = input(f"\nEnter project number (1-{len(projects)}): ").strip()
-            try:
-                idx = int(selection) - 1
-                if 0 <= idx < len(projects):
-                    project_name = projects[idx][0]
-                else:
-                    print(f"{Colors.FAIL}Invalid selection{Colors.ENDC}")
-                    sys.exit(1)
-            except ValueError:
-                print(f"{Colors.FAIL}Invalid input{Colors.ENDC}")
-                sys.exit(1)
-
-        do_package(project_name, script_dir, repos_parent)
-        sys.exit(0)
-    else:
-        print(f"{Colors.FAIL}Invalid choice{Colors.ENDC}")
-        sys.exit(1)
-
-# Helper function to select project when not provided
-def select_project_for_subcommand(repos_parent, require_thunderstore_metadata=False):
-    """Auto-detect repo and select project (auto-select if only one, menu if multiple)"""
-    current_repo = detect_current_repo(repos_parent)
-
-    if not current_repo:
-        print(f"{Colors.FAIL}Error: Please run this command from within a repo directory{Colors.ENDC}")
-        print(f"(e.g., C:\\Users\\Alex\\repos\\BroforceMods\\)")
-        sys.exit(1)
-
-    projects = find_all_projects(repos_parent, require_thunderstore_metadata=require_thunderstore_metadata, filter_repo=current_repo)
-
-    if not projects:
-        if require_thunderstore_metadata:
-            print(f"{Colors.FAIL}Error: No projects with Thunderstore metadata found in {current_repo}{Colors.ENDC}")
-            print(f"Run: broforce-tools init-thunderstore")
-        else:
-            print(f"{Colors.FAIL}Error: No projects found in {current_repo}{Colors.ENDC}")
-        sys.exit(1)
-
-    # Auto-select if only one project
-    if len(projects) == 1:
-        project_name = projects[0][0]
-        print(f"{Colors.CYAN}Using project: {project_name}{Colors.ENDC}")
-        return project_name
-
-    # Show menu if multiple projects
-    if questionary:
-        choices = [name for name, repo in projects]
-        project_name = questionary.select(
-            f"Select project from {current_repo}:",
-            choices=choices
-        ).ask()
-        if not project_name:  # User cancelled
-            sys.exit(0)
-        return project_name
-    else:
-        # Fallback if questionary not available
-        print(f"\n{Colors.CYAN}Available projects in {current_repo}:{Colors.ENDC}")
-        for i, (name, repo) in enumerate(projects, 1):
-            print(f"  {i}. {name}")
-        selection = input(f"\nEnter project number (1-{len(projects)}): ").strip()
-        try:
-            idx = int(selection) - 1
-            if 0 <= idx < len(projects):
-                return projects[idx][0]
-            else:
-                print(f"{Colors.FAIL}Invalid selection{Colors.ENDC}")
-                sys.exit(1)
-        except ValueError:
-            print(f"{Colors.FAIL}Invalid input{Colors.ENDC}")
-            sys.exit(1)
+    elif choice == "Setup Thunderstore metadata for an existing project":
+        # Route to init-thunderstore command handler
+        args.command = 'init-thunderstore'
+        args.project_name = None
+    elif choice == "Package for releasing on Thunderstore":
+        # Route to package command handler
+        args.command = 'package'
+        args.project_name = None
+        args.version = None
 
 # Route to subcommand modes
 if args.command == 'init-thunderstore':
-    project_name = args.project_name
-    if not project_name:
-        project_name = select_project_for_subcommand(repos_parent, require_thunderstore_metadata=False)
-    do_init_thunderstore(project_name, script_dir, repos_parent)
+    if args.project_name:
+        # Project specified directly
+        do_init_thunderstore(args.project_name, script_dir, repos_parent)
+    else:
+        # Interactive selection
+        selected = select_projects_interactive(repos_parent, 'init', use_all_repos=args.all_repos)
+        if not selected:
+            sys.exit(0)
+        for project_name, repo in selected:
+            if len(selected) > 1:
+                print(f"\n{Colors.HEADER}{'='*50}{Colors.ENDC}")
+            do_init_thunderstore(project_name, script_dir, repos_parent)
     sys.exit(0)
 elif args.command == 'package':
-    project_name = args.project_name
-    if not project_name:
-        project_name = select_project_for_subcommand(repos_parent, require_thunderstore_metadata=True)
-    do_package(project_name, script_dir, repos_parent, args.version)
+    if args.project_name:
+        # Project specified directly
+        do_package(args.project_name, script_dir, repos_parent, args.version)
+    else:
+        # Interactive selection
+        selected = select_projects_interactive(repos_parent, 'package', use_all_repos=args.all_repos)
+        if not selected:
+            sys.exit(0)
+        for project_name, repo in selected:
+            if len(selected) > 1:
+                print(f"\n{Colors.HEADER}{'='*50}{Colors.ENDC}")
+            do_package(project_name, script_dir, repos_parent, args.version)
     sys.exit(0)
 elif args.command == 'create':
     # Continue with create project mode below
@@ -1580,22 +1690,43 @@ if args.output_repo:
     output_repo_name = args.output_repo
     print(f"{Colors.BLUE}Using output repository: {output_repo_name}{Colors.ENDC}")
 else:
-    # Interactive mode: always ask for repo
-    print(f"\n{Colors.HEADER}Select output repository:{Colors.ENDC}")
-    print(f"{Colors.CYAN}1.{Colors.ENDC} {template_repo_name} (current repository)")
-    print(f"{Colors.CYAN}2.{Colors.ENDC} Enter another repository name")
-    repo_choice = input("Enter your choice (1 or 2): ").strip()
+    # Build repo choices
+    current_repo = detect_current_repo(repos_parent)
+    configured_repos = get_configured_repos()
 
-    if repo_choice == "1":
-        output_repo_name = template_repo_name
-    elif repo_choice == "2":
-        output_repo_name = input("Enter repository name: ").strip()
+    choices = []
+
+    # Add current repo first if we're in one
+    if current_repo:
+        choices.append(f"{current_repo} (current directory)")
+
+    # Add other configured repos (excluding current if already added)
+    for repo in configured_repos:
+        if repo != current_repo:
+            choices.append(repo)
+
+    # Always add manual entry option
+    choices.append("Enter another repository name...")
+
+    selection = questionary.select(
+        "Select output repository:",
+        choices=choices
+    ).ask()
+
+    if not selection:  # User cancelled
+        sys.exit(0)
+
+    if selection == "Enter another repository name...":
+        output_repo_name = questionary.text(
+            "Enter repository name:"
+        ).ask()
         if not output_repo_name:
             print(f"{Colors.FAIL}Error: Repository name cannot be empty.{Colors.ENDC}")
             sys.exit(1)
+    elif selection.endswith(" (current directory)"):
+        output_repo_name = current_repo
     else:
-        print(f"{Colors.FAIL}Invalid choice. Please run the script again and enter 1 or 2.{Colors.ENDC}")
-        sys.exit(1)
+        output_repo_name = selection
 
     print(f"{Colors.BLUE}Using output repository: {output_repo_name}{Colors.ENDC}")
 
@@ -1611,18 +1742,15 @@ if not os.path.exists(broforce_path):
 if args.type:
     template_type = args.type
 else:
-    print(f"{Colors.HEADER}What would you like to create?{Colors.ENDC}")
-    print(f"{Colors.CYAN}1.{Colors.ENDC} Mod")
-    print(f"{Colors.CYAN}2.{Colors.ENDC} Bro")
-    choice = input("Enter your choice (1 or 2): ").strip()
+    choice = questionary.select(
+        "What would you like to create?",
+        choices=["Mod", "Bro"]
+    ).ask()
 
-    if choice == "1":
-        template_type = "mod"
-    elif choice == "2":
-        template_type = "bro"
-    else:
-        print(f"{Colors.FAIL}Invalid choice. Please run the script again and enter 1 or 2.{Colors.ENDC}")
-        sys.exit(1)
+    if not choice:  # User cancelled
+        sys.exit(0)
+
+    template_type = choice.lower()
 
 # Set template parameters based on type
 if template_type == "mod":
@@ -1636,7 +1764,10 @@ else:
 if args.name:
     newName = args.name
 else:
-    newName = input(f'Enter {template_type} name:\n')
+    newName = questionary.text(f"Enter {template_type} name:").ask()
+    if not newName:
+        print(f"{Colors.FAIL}Error: Name cannot be empty.{Colors.ENDC}")
+        sys.exit(1)
 
 newNameWithUnderscore = newName.replace(' ', '_')
 newNameNoSpaces = newName.replace(' ', '')
@@ -1645,7 +1776,10 @@ newNameNoSpaces = newName.replace(' ', '')
 if args.author:
     authorName = args.author
 else:
-    authorName = input('Enter author name (e.g., YourName):\n')
+    authorName = questionary.text("Enter author name (e.g., YourName):").ask()
+    if not authorName:
+        print(f"{Colors.FAIL}Error: Author name cannot be empty.{Colors.ENDC}")
+        sys.exit(1)
 
 # Define paths
 templatePath = os.path.join(template_repo_dir, source_template_name)
