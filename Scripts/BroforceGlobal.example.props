@@ -35,6 +35,9 @@
     <!-- Show detailed build messages (default: false) -->
     <VerboseBuildOutput>false</VerboseBuildOutput>
 
+    <!-- Library path for DLL references (adjust to your libs location) -->
+    <LibPath>$(MSBuildThisFileDirectory)YourRepo/libs</LibPath>
+
     <!-- Library paths (if Bro-Maker and RocketLib are in same parent directory as repos) -->
     <BroMakerLibPath>$(MSBuildThisFileDirectory)Bro-Maker/BroMakerLib/_ModContent/BroMakerLib.dll</BroMakerLibPath>
     <RocketLibPath>$(MSBuildThisFileDirectory)RocketLib/RocketLib/_ModContent/RocketLib.dll</RocketLibPath>
