@@ -1,75 +1,188 @@
 # Broforce Templates
 
-This repository provides templates and scripts for creating Broforce mods and custom bros.
+Templates and tools for creating Broforce mods and custom bros.
 
 ## Setup
 
-Create a props file in your repos parent directory to configure paths:
+Create a props file to configure paths for the build system.
 
-### Option 1: LocalBroforcePath.props (per-machine, git-ignored)
+### Option 1: LocalBroforcePath.props (per-repo)
+Create this file in your repo's root directory:
 ```xml
 <?xml version="1.0" encoding="utf-8"?>
 <Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
   <PropertyGroup>
     <BroforcePath>C:\Program Files (x86)\Steam\steamapps\common\Broforce</BroforcePath>
-    <BroMakerLibPath>C:\Users\YourName\repos\Bro-Maker\BroMakerLib\_ModContent\BroMakerLib.dll</BroMakerLibPath>
-    <RocketLibPath>C:\Users\YourName\repos\RocketLib\RocketLib\_ModContent\RocketLib.dll</RocketLibPath>
+    <!-- Point these to your installed mods (Thunderstore structure) -->
+    <BroMakerLibPath>$(BroforcePath)\Mods\BroMaker-BroMaker\BroMaker\BroMakerLib.dll</BroMakerLibPath>
+    <RocketLibPath>$(BroforcePath)\Mods\RocketLib-RocketLib\RocketLib\RocketLib.dll</RocketLibPath>
+    <!-- If building from source repos: -->
+    <!-- <BroMakerLibPath>C:\Users\YourName\repos\Bro-Maker\BroMakerLib\_ModContent\BroMakerLib.dll</BroMakerLibPath> -->
+    <!-- <RocketLibPath>C:\Users\YourName\repos\RocketLib\RocketLib\_ModContent\RocketLib.dll</RocketLibPath> -->
   </PropertyGroup>
 </Project>
 ```
 
-### Option 2: BroforceGlobal.props (shared settings)
-Create this file in your repos parent directory with the same structure as above.
+### Option 2: BroforceGlobal.props (shared across repos)
+Create this file in your repos parent directory with the same structure.
 
 See `Scripts/LocalBroforcePath.example.props` and `Scripts/BroforceGlobal.example.props` for templates.
 
-## Creating Projects
+## broforce-tools
 
-Use `create-project.py` to generate new mods or custom bros from the templates.
+Tool for creating projects, setting up Thunderstore metadata, and packaging mods.
 
-### Usage
+### Requirements
+
+- Python 3.7+
+- pipx (`pip install pipx` then `pipx ensurepath`)
+
+### Installation
+
 ```bash
-# Interactive mode
-python create-project.py
-
-# Command line mode
-python create-project.py -t mod -n "My Mod" -a "YourName"
-python create-project.py --type bro --name "My Bro" --author "YourName"
-
-# Create in a different repository
-python create-project.py -t mod -n "My Mod" -a "YourName" -o "BroforceMods"
+pipx install -e path/to/Broforce-Templates/Scripts
 ```
 
-### Options
-- `-h, --help` - Show help message
+This installs `bt` and `broforce-tools` commands globally.
+
+### Running the Tool
+
+```bash
+bt
+```
+
+Running without arguments opens interactive mode with a menu.
+
+### Configuration
+
+Create `Scripts/broforce-tools.json` to configure repos and defaults:
+```json
+{
+  "repos": ["BroforceMods", "RocketLib", "Bro-Maker"],
+  "defaults": {
+    "namespace": "YourName",
+    "website_url": "https://github.com/yourname/repo"
+  }
+}
+```
+
+- `repos` - Repositories to search for projects
+- `defaults.namespace` - Pre-filled namespace for init-thunderstore
+- `defaults.website_url` - Pre-filled URL for init-thunderstore
+
+### create
+
+Create a new mod or bro project from templates.
+
+```bash
+# Interactive
+bt create
+
+# Command line
+bt create -t mod -n "My Mod" -a "YourName"
+bt create -t bro -n "My Bro" -a "YourName" -o "BroforceMods"
+```
+
+Options:
 - `-t, --type` - Project type: `mod` or `bro`
 - `-n, --name` - Project name
 - `-a, --author` - Author name
-- `-o, --output-repo` - Name of the repository to output to
+- `-o, --output-repo` - Target repository (defaults to current)
 
-The script will:
-1. Create source files in the specified repository
-2. Create a `Releases/[ProjectName]/` folder with Changelog.md
-3. Copy `BroforceModBuild.targets` to the output repository's Scripts folder
-4. Configure the project to use BroforceModBuild.targets
+Creates source files, `Releases/{ProjectName}/Changelog.md`, and copies build targets to the output repo.
 
-### Building Projects
+### init-thunderstore
 
-The build targets file automatically:
-- Detects project type (mod or bro)
+Set up Thunderstore metadata for an existing project.
+
+```bash
+# Interactive (select from available projects)
+bt init-thunderstore
+
+# Specify project
+bt init-thunderstore "Project Name"
+```
+
+Creates in `Releases/{ProjectName}/`:
+- `manifest.json` - Package metadata with auto-detected dependencies
+- `README.md` - Template readme
+- `icon.png` - Placeholder icon (replace before publishing)
+- `Changelog.md` - If not already present
+
+Dependencies are detected by scanning the project's .csproj for RocketLib/BroMakerLib references.
+
+### package
+
+Create a Thunderstore-ready ZIP package.
+
+```bash
+# Interactive (select from projects with metadata)
+bt package
+
+# Specify project
+bt package "Project Name"
+
+# Override version
+bt package "Project Name" --version 2.0.0
+```
+
+The version is read from `Changelog.md` (looks for `## v1.0.0` or `## v1.0.0 (unreleased)`). The tool syncs this version to manifest.json and Info.json/.mod.json.
+
+Output: `{Namespace}-{PackageName}-{Version}.zip` in the project's release folder.
+
+### Global Flags
+
+These work with any subcommand or standalone:
+
+- `--all-repos` - Show projects from all configured repos (not just current directory)
+- `--add-repo [NAME]` - Add a repo to the config (uses current repo if name omitted)
+- `--clear-cache` - Clear the dependency version cache
+
+## Building Projects
+
+The build targets file (`BroforceModBuild.targets`) automatically:
+- Detects project type (mod or bro) from metadata files
 - Copies DLL to `_ModContent` folder
 - Installs to game directory on build
 - Optionally closes/launches Broforce
-- Supports hard links for faster builds
 
-Build in Visual Studio or with MSBuild - everything is automatic!
+Build in Visual Studio or with MSBuild.
 
-### Releases Folder Structure
+### Project Structure
 
 ```
-Releases/
-└── ProjectName/
-    └── Changelog.md    # Version history
+ProjectName/
+├── ProjectName/
+│   ├── _ModContent/     # Mod assets, installed to game on build
+│   │   ├── Info.json    # Mod metadata (mods)
+│   │   └── *.mod.json   # Bro metadata (bros)
+│   └── ProjectName.csproj
+└── Releases/
+    └── ProjectName/
+        ├── manifest.json
+        ├── README.md
+        ├── icon.png
+        └── Changelog.md
 ```
 
-The `_ModContent` folder in your project contains all mod/bro assets and gets installed to the game automatically on build.
+## Optional Setup
+
+### Tab Completion
+
+After installation, enable shell completion:
+
+```bash
+# PowerShell
+bt --install-completion powershell
+
+# Bash
+bt --install-completion bash
+
+# Zsh
+bt --install-completion zsh
+
+# Fish
+bt --install-completion fish
+```
+
+Restart your shell after installing completion.

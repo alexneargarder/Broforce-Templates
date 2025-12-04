@@ -1,0 +1,17 @@
+[project]
+name = "broforce-tools"
+version = "1.0.0"
+description = "Tool for creating Broforce mods and packaging for Thunderstore"
+requires-python = ">=3.7"
+dependencies = [
+    "typer[all]",
+    "questionary",
+]
+
+[project.scripts]
+bt = "broforce_tools:main"
+broforce-tools = "broforce_tools:main"
+
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"

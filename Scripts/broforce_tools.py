@@ -1,25 +1,15 @@
-# PYTHON_ARGCOMPLETE_OK
 import shutil, errno
 import os, fnmatch
 import sys
 import re
-import argparse
 import json
-
-try:
-    import argcomplete
-    HAS_ARGCOMPLETE = True
-except ImportError:
-    HAS_ARGCOMPLETE = False
 import xml.etree.ElementTree as ET
 import time
 import tempfile
+from typing import Optional
 
-try:
-    import questionary
-except ImportError:
-    print("Error: questionary package is required. Install with: pip install questionary")
-    sys.exit(1)
+import typer
+import questionary
 
 try:
     import urllib.request
@@ -629,19 +619,18 @@ def detect_current_repo(repos_parent):
 
     # Handle WSL/Windows path conversion for comparison
     # Convert C:/... to /mnt/c/... or vice versa
+    cwd_abs_alt = None
+    repos_abs_alt = None
+
     if cwd_abs.startswith('c:/'):
         cwd_abs = '/mnt/c/' + cwd_abs[3:]
     elif cwd_abs.startswith('/mnt/c/'):
         cwd_abs_alt = 'c:/' + cwd_abs[7:]
-    else:
-        cwd_abs_alt = None
 
     if repos_abs.startswith('c:/'):
         repos_abs = '/mnt/c/' + repos_abs[3:]
     elif repos_abs.startswith('/mnt/c/'):
         repos_abs_alt = 'c:/' + repos_abs[7:]
-    else:
-        repos_abs_alt = None
 
     # Also convert original paths
     cwd_orig_normalized = cwd_original.lower()
@@ -1207,10 +1196,10 @@ def do_package(project_name, script_dir, repos_parent, version_override=None):
                 default=False
             ).ask()
 
-            if not continue_package:
+            if continue_package is None or not continue_package:
                 print(f"\n{Colors.CYAN}Packaging cancelled.{Colors.ENDC}")
                 print(f"Update Changelog.md to version {version} before packaging.")
-                sys.exit(0)
+                raise typer.Exit()
 
     # Load and update manifest
     with open(manifest_path, 'r', encoding='utf-8') as f:
@@ -1229,11 +1218,16 @@ def do_package(project_name, script_dir, repos_parent, version_override=None):
             default=True
         ).ask()
 
-        if set_author:
+        if set_author is None:
+            raise typer.Exit()
+        elif set_author:
             namespace = questionary.text(
                 "Enter namespace/author (alphanumeric + underscores only):",
                 validate=lambda text: validate_package_name(text)[0]
             ).ask()
+
+            if namespace is None:
+                raise typer.Exit()
 
             manifest_data['author'] = namespace
             print(f"{Colors.GREEN}Author set to: {namespace}{Colors.ENDC}")
@@ -1278,7 +1272,9 @@ def do_package(project_name, script_dir, repos_parent, version_override=None):
             default=True
         ).ask()
 
-        if update:
+        if update is None:
+            raise typer.Exit()
+        elif update:
             manifest_data['dependencies'] = updated_deps
             print(f"{Colors.GREEN}Dependencies updated{Colors.ENDC}")
         else:
@@ -1306,7 +1302,9 @@ def do_package(project_name, script_dir, repos_parent, version_override=None):
             default=True
         ).ask()
 
-        if add_deps:
+        if add_deps is None:
+            raise typer.Exit()
+        elif add_deps:
             # Add missing dependencies to the list
             if updated_deps:
                 updated_deps.extend(missing_deps)
@@ -1358,10 +1356,12 @@ def do_package(project_name, script_dir, repos_parent, version_override=None):
             default=True
         ).ask()
 
-        if not overwrite:
+        if overwrite is None:
+            raise typer.Exit()
+        elif not overwrite:
             print(f"\n{Colors.CYAN}Packaging cancelled.{Colors.ENDC}")
             print(f"To create a new package, update the version in Changelog.md")
-            sys.exit(0)
+            raise typer.Exit()
 
         # User confirmed - delete old package (don't archive it)
         os.remove(zip_path)
@@ -1441,509 +1441,486 @@ def do_package(project_name, script_dir, repos_parent, version_override=None):
     print(f"{Colors.CYAN}Size:{Colors.ENDC} {zip_size:.1f} KB")
     print(f"\n{Colors.CYAN}Package ready for Thunderstore upload!{Colors.ENDC}")
 
-# Parse command line arguments
-parser = argparse.ArgumentParser(
-    description='Create Broforce mod/bro projects and Thunderstore packages',
-    formatter_class=argparse.RawDescriptionHelpFormatter,
-    epilog='''Examples:
-  # Interactive mode (shows menu)
-  %(prog)s
+def do_create_project(template_type: Optional[str], name: Optional[str], author: Optional[str], output_repo: Optional[str]):
+    """Create a new mod or bro project from templates"""
+    import filecmp
 
-  # Create new project
-  %(prog)s create -t mod -n "My Mod" -a "MyName"
-  %(prog)s create -t bro -n "My Bro" -a "MyName" -o "BroforceMods"
-
-  # Initialize Thunderstore metadata
-  %(prog)s init-thunderstore
-  %(prog)s init-thunderstore "Project Name"
-
-  # Package for Thunderstore
-  %(prog)s package
-  %(prog)s package "Project Name"
-  %(prog)s package --version 1.2.3
-
-  # Clear dependency version cache (force fresh API fetch on next run)
-  %(prog)s --clear-cache
-
-  # Add current repo to configured repos list
-  %(prog)s --add-repo
-  %(prog)s --add-repo "RepoName"
-
-  # Work with all configured repos
-  %(prog)s --all-repos
-  %(prog)s package --all-repos
-  %(prog)s init-thunderstore --all-repos
-'''
-)
-
-# Global arguments
-parser.add_argument('--clear-cache', action='store_true',
-                    help='Clear the dependency version cache and exit')
-parser.add_argument('--add-repo', nargs='?', const='', metavar='REPO',
-                    help='Add a repo to configured repos list (uses current repo if not specified)')
-parser.add_argument('--all-repos', action='store_true',
-                    help='Show projects from all configured repos (for package/init-thunderstore)')
-
-# Hidden arguments for shell completion
-parser.add_argument('--list-projects', choices=['package', 'init-thunderstore'],
-                    help=argparse.SUPPRESS)
-parser.add_argument('--list-repos', action='store_true',
-                    help=argparse.SUPPRESS)
-parser.add_argument('--list-templates', action='store_true',
-                    help=argparse.SUPPRESS)
-
-subparsers = parser.add_subparsers(dest='command', help='Command to run')
-
-# create subcommand
-create_parser = subparsers.add_parser('create', help='Create new mod or bro project')
-create_parser.add_argument('-t', '--type', choices=['mod', 'bro'], help='Project type (mod or bro)')
-create_parser.add_argument('-n', '--name', help='Name of the mod or bro')
-create_parser.add_argument('-a', '--author', help='Author name')
-create_parser.add_argument('-o', '--output-repo', help='Name of the repository to output to (defaults to current repo)')
-
-# init-thunderstore subcommand
-init_parser = subparsers.add_parser('init-thunderstore', help='Initialize Thunderstore metadata for a project')
-init_parser.add_argument('project_name', nargs='?', help='Name of the project (optional: auto-detect from current repo)')
-init_parser.add_argument('--all-repos', action='store_true',
-                         help='Show projects from all configured repos')
-
-# package subcommand
-package_parser = subparsers.add_parser('package', help='Create Thunderstore package')
-package_parser.add_argument('project_name', nargs='?', help='Name of the project (optional: auto-detect from current repo)')
-package_parser.add_argument('--version', help='Override version (default: read from Changelog.md)')
-package_parser.add_argument('--all-repos', action='store_true',
-                            help='Show projects from all configured repos')
-
-if HAS_ARGCOMPLETE:
-    argcomplete.autocomplete(parser)
-args = parser.parse_args()
-
-# Handle --clear-cache flag
-if args.clear_cache:
-    if os.path.exists(CACHE_FILE):
-        try:
-            os.remove(CACHE_FILE)
-            print(f"{Colors.GREEN}Dependency cache cleared: {CACHE_FILE}{Colors.ENDC}")
-        except OSError as e:
-            print(f"{Colors.FAIL}Error clearing cache: {e}{Colors.ENDC}")
-            sys.exit(1)
-    else:
-        print(f"{Colors.BLUE}Cache file does not exist: {CACHE_FILE}{Colors.ENDC}")
-    sys.exit(0)
-
-# Handle --add-repo flag
-if args.add_repo is not None:
-    # Get paths needed for repo detection
     script_dir = os.path.dirname(os.path.abspath(__file__))
     template_repo_dir = os.path.dirname(script_dir)
     repos_parent = os.path.dirname(template_repo_dir)
 
-    # Determine repo name to add
-    if args.add_repo == '':
-        # No argument provided, detect from current directory
-        repo_name = detect_current_repo(repos_parent)
-        if not repo_name:
-            print(f"{Colors.FAIL}Error: Could not detect current repo from working directory{Colors.ENDC}")
-            print(f"Run from within a repo directory, or specify repo name: --add-repo RepoName")
-            sys.exit(1)
+    # Determine output repository
+    if output_repo:
+        output_repo_name = output_repo
+        print(f"{Colors.BLUE}Using output repository: {output_repo_name}{Colors.ENDC}")
     else:
-        repo_name = args.add_repo
+        # Build repo choices
+        current_repo = detect_current_repo(repos_parent)
+        configured_repos = get_configured_repos()
 
-    # Load current config and add repo
-    config = load_config()
-    repos = config.get('repos', [])
+        choices = []
 
-    if repo_name in repos:
-        print(f"{Colors.BLUE}'{repo_name}' is already in configured repos{Colors.ENDC}")
-    else:
-        repos.append(repo_name)
-        config['repos'] = repos
-        if save_config(config):
-            print(f"{Colors.GREEN}Added '{repo_name}' to configured repos{Colors.ENDC}")
-        else:
-            print(f"{Colors.FAIL}Error: Failed to save config file{Colors.ENDC}")
-            sys.exit(1)
+        # Add current repo first if we're in one
+        if current_repo:
+            choices.append(f"{current_repo} (current directory)")
 
-    print(f"\n{Colors.CYAN}Configured repos:{Colors.ENDC}")
-    for r in repos:
-        print(f"  - {r}")
-    sys.exit(0)
+        # Add other configured repos (excluding current if already added)
+        for repo in configured_repos:
+            if repo != current_repo:
+                choices.append(repo)
 
-# Get paths needed by completion handlers
-script_dir = os.path.dirname(os.path.abspath(__file__))
-template_repo_dir = os.path.dirname(script_dir)
-repos_parent = os.path.dirname(template_repo_dir)
+        # Always add manual entry option
+        choices.append("Enter another repository name...")
 
-# Handle --list-templates (for shell completion)
-if args.list_templates:
-    print('mod')
-    print('bro')
-    sys.exit(0)
-
-# Handle --list-repos (for shell completion)
-if args.list_repos:
-    config = load_config()
-    for repo in config.get('repos', []):
-        print(repo)
-    sys.exit(0)
-
-# Handle --list-projects (for shell completion)
-if args.list_projects:
-    repos, _ = get_repos_to_search(repos_parent, use_all_repos=False)
-    if not repos:
-        sys.exit(0)
-
-    if args.list_projects == 'package':
-        projects = find_projects(repos_parent, repos, require_metadata=True)
-    else:
-        # init-thunderstore: exclude projects that already have metadata
-        projects = find_projects(repos_parent, repos, exclude_with_metadata=True)
-
-    for name, repo in projects:
-        print(name)
-    sys.exit(0)
-
-# Get paths needed by all modes
-script_dir = os.path.dirname(os.path.abspath(__file__))
-template_repo_dir = os.path.dirname(script_dir)
-repos_parent = os.path.dirname(template_repo_dir)
-template_repo_name = os.path.basename(template_repo_dir)
-
-# Interactive mode - no command specified
-if args.command is None:
-    print(f"{Colors.HEADER}Broforce Mod Tools{Colors.ENDC}\n")
-
-    choice = questionary.select(
-        "What would you like to do?",
-        choices=[
-            "Create new mod / bro project",
-            "Setup Thunderstore metadata for an existing project",
-            "Package for releasing on Thunderstore",
-            "Show help"
-        ]
-    ).ask()
-
-    if not choice:  # User cancelled
-        sys.exit(0)
-
-    if choice == "Show help":
-        parser.print_help()
-        sys.exit(0)
-    elif choice == "Create new mod / bro project":
-        # Set command to 'create' to continue to create project mode below
-        args.command = 'create'
-        args.type = None
-        args.name = None
-        args.author = None
-        args.output_repo = None
-    elif choice == "Setup Thunderstore metadata for an existing project":
-        # Route to init-thunderstore command handler
-        args.command = 'init-thunderstore'
-        args.project_name = None
-    elif choice == "Package for releasing on Thunderstore":
-        # Route to package command handler
-        args.command = 'package'
-        args.project_name = None
-        args.version = None
-
-# Route to subcommand modes
-if args.command == 'init-thunderstore':
-    if args.project_name:
-        # Project specified directly
-        do_init_thunderstore(args.project_name, script_dir, repos_parent)
-    else:
-        # Interactive selection
-        selected = select_projects_interactive(repos_parent, 'init', use_all_repos=args.all_repos)
-        if not selected:
-            sys.exit(0)
-        for project_name, repo in selected:
-            if len(selected) > 1:
-                print(f"\n{Colors.HEADER}{'='*50}{Colors.ENDC}")
-            do_init_thunderstore(project_name, script_dir, repos_parent)
-    sys.exit(0)
-elif args.command == 'package':
-    if args.project_name:
-        # Project specified directly
-        do_package(args.project_name, script_dir, repos_parent, args.version)
-    else:
-        # Interactive selection
-        selected = select_projects_interactive(repos_parent, 'package', use_all_repos=args.all_repos)
-        if not selected:
-            sys.exit(0)
-        for project_name, repo in selected:
-            if len(selected) > 1:
-                print(f"\n{Colors.HEADER}{'='*50}{Colors.ENDC}")
-            do_package(project_name, script_dir, repos_parent, args.version)
-    sys.exit(0)
-elif args.command == 'create':
-    # Continue with create project mode below
-    pass
-else:
-    # No valid command
-    parser.print_help()
-    sys.exit(1)
-
-# Create project mode
-
-# Determine output repository
-if args.output_repo:
-    output_repo_name = args.output_repo
-    print(f"{Colors.BLUE}Using output repository: {output_repo_name}{Colors.ENDC}")
-else:
-    # Build repo choices
-    current_repo = detect_current_repo(repos_parent)
-    configured_repos = get_configured_repos()
-
-    choices = []
-
-    # Add current repo first if we're in one
-    if current_repo:
-        choices.append(f"{current_repo} (current directory)")
-
-    # Add other configured repos (excluding current if already added)
-    for repo in configured_repos:
-        if repo != current_repo:
-            choices.append(repo)
-
-    # Always add manual entry option
-    choices.append("Enter another repository name...")
-
-    selection = questionary.select(
-        "Select output repository:",
-        choices=choices
-    ).ask()
-
-    if not selection:  # User cancelled
-        sys.exit(0)
-
-    if selection == "Enter another repository name...":
-        output_repo_name = questionary.text(
-            "Enter repository name:"
+        selection = questionary.select(
+            "Select output repository:",
+            choices=choices
         ).ask()
-        if not output_repo_name:
-            print(f"{Colors.FAIL}Error: Repository name cannot be empty.{Colors.ENDC}")
-            sys.exit(1)
-    elif selection.endswith(" (current directory)"):
-        output_repo_name = current_repo
-    else:
-        output_repo_name = selection
 
-    print(f"{Colors.BLUE}Using output repository: {output_repo_name}{Colors.ENDC}")
+        if not selection:  # User cancelled
+            raise typer.Exit()
 
-# Get Broforce path from props files
-broforce_path = get_broforce_path(repos_parent)
-
-# Check if Broforce path exists
-if not os.path.exists(broforce_path):
-    print(f"{Colors.FAIL}Error: Broforce path does not exist: {broforce_path}{Colors.ENDC}")
-    sys.exit(1)
-
-# Get project type
-if args.type:
-    template_type = args.type
-else:
-    choice = questionary.select(
-        "What would you like to create?",
-        choices=["Mod", "Bro"]
-    ).ask()
-
-    if not choice:  # User cancelled
-        sys.exit(0)
-
-    template_type = choice.lower()
-
-# Set template parameters based on type
-if template_type == "mod":
-    template_type_title = "Mod"
-    source_template_name = "Mod Template"
-else:
-    template_type_title = "Bro"
-    source_template_name = "Bro Template"
-
-# Get the name for the new template
-if args.name:
-    newName = args.name
-else:
-    newName = questionary.text(f"Enter {template_type} name:").ask()
-    if not newName:
-        print(f"{Colors.FAIL}Error: Name cannot be empty.{Colors.ENDC}")
-        sys.exit(1)
-
-newNameWithUnderscore = newName.replace(' ', '_')
-newNameNoSpaces = newName.replace(' ', '')
-
-# Get the author name
-if args.author:
-    authorName = args.author
-else:
-    authorName = questionary.text("Enter author name (e.g., YourName):").ask()
-    if not authorName:
-        print(f"{Colors.FAIL}Error: Author name cannot be empty.{Colors.ENDC}")
-        sys.exit(1)
-
-# Define paths
-templatePath = os.path.join(template_repo_dir, source_template_name)
-output_repo_path = os.path.join(repos_parent, output_repo_name)
-
-# Check if output repository exists
-if not os.path.exists(output_repo_path):
-    print(f"{Colors.FAIL}Error: Output repository does not exist: {output_repo_path}{Colors.ENDC}")
-    print(f"{Colors.WARNING}Please ensure the repository '{output_repo_name}' exists in: {repos_parent}{Colors.ENDC}")
-    sys.exit(1)
-
-# Copy BroforceModBuild.targets to output repo Scripts folder (if different repo)
-if output_repo_path != template_repo_dir:
-    output_scripts_dir = os.path.join(output_repo_path, 'Scripts')
-    if not os.path.exists(output_scripts_dir):
-        os.makedirs(output_scripts_dir)
-        print(f"{Colors.GREEN}Created Scripts directory: {output_scripts_dir}{Colors.ENDC}")
-
-    targets_source = os.path.join(script_dir, 'BroforceModBuild.targets')
-    targets_dest = os.path.join(output_scripts_dir, 'BroforceModBuild.targets')
-
-    if os.path.exists(targets_source):
-        try:
-            # Only copy if destination doesn't exist or is different
-            if not os.path.exists(targets_dest):
-                shutil.copy2(targets_source, targets_dest)
-                print(f"{Colors.GREEN}Copied BroforceModBuild.targets to output repository{Colors.ENDC}")
-            else:
-                # Check if files are identical
-                import filecmp
-                if not filecmp.cmp(targets_source, targets_dest, shallow=False):
-                    try:
-                        shutil.copy2(targets_source, targets_dest)
-                        print(f"{Colors.GREEN}Updated BroforceModBuild.targets in output repository{Colors.ENDC}")
-                    except PermissionError:
-                        print(f"{Colors.WARNING}Warning: Could not update BroforceModBuild.targets (file in use){Colors.ENDC}")
-                else:
-                    print(f"{Colors.BLUE}BroforceModBuild.targets already up-to-date{Colors.ENDC}")
-        except PermissionError:
-            print(f"{Colors.WARNING}Warning: Could not copy BroforceModBuild.targets (file in use){Colors.ENDC}")
-    else:
-        print(f"{Colors.WARNING}Warning: BroforceModBuild.targets not found in template repo{Colors.ENDC}")
-
-# Create the release folder structure in output repo
-releasesPath = os.path.join(output_repo_path, 'Releases')
-newReleaseFolder = os.path.join(releasesPath, newName)
-newRepoPath = os.path.join(output_repo_path, newName)
-
-# Check if template directory exists
-if not os.path.exists(templatePath):
-    print(f"{Colors.FAIL}Error: Template directory not found: {templatePath}{Colors.ENDC}")
-    print(f"Please ensure the '{source_template_name}' directory exists in your repository.")
-    sys.exit(1)
-
-# Create Releases directory if it doesn't exist
-if not os.path.exists(releasesPath):
-    try:
-        os.makedirs(releasesPath)
-        print(f"{Colors.GREEN}Created Releases directory: {releasesPath}{Colors.ENDC}")
-    except Exception as e:
-        print(f"{Colors.FAIL}Error: Failed to create Releases directory: {e}{Colors.ENDC}")
-        sys.exit(1)
-
-# Check if destination directories already exist
-if os.path.exists(newReleaseFolder):
-    print(f"{Colors.FAIL}Error: Release directory already exists: {newReleaseFolder}{Colors.ENDC}")
-    print(f"Please choose a different {template_type} name or remove the existing directory.")
-    sys.exit(1)
-
-if os.path.exists(newRepoPath):
-    print(f"{Colors.FAIL}Error: Repository directory already exists: {newRepoPath}{Colors.ENDC}")
-    print(f"Please choose a different {template_type} name or remove the existing directory.")
-    sys.exit(1)
-
-try:
-    # Create the release folder
-    os.makedirs(newReleaseFolder)
-    # Copy the source template to the repo
-    copyanything(templatePath, newRepoPath)
-except Exception as e:
-    print(f"{Colors.FAIL}Error: Failed to copy template files: {e}{Colors.ENDC}")
-    # Clean up partially created directories
-    if os.path.exists(newReleaseFolder):
-        shutil.rmtree(newReleaseFolder)
-    if os.path.exists(newRepoPath):
-        shutil.rmtree(newRepoPath)
-    sys.exit(1)
-
-try:
-    # Rename files named with template name (with space)
-    renameFiles(newRepoPath, source_template_name, newName)
-
-    # Also rename files named without space
-    if template_type == "mod":
-        renameFiles(newRepoPath, 'ModTemplate', newNameNoSpaces)
-    else:
-        renameFiles(newRepoPath, 'BroTemplate', newNameNoSpaces)
-
-    # File types to process
-    if template_type == "mod":
-        fileTypes = ["*.csproj", "*.cs", "*.sln", "*.json", "*.xml"]
-    else:
-        fileTypes = ["*.csproj", "*.cs", "*.sln", "*.json"]
-
-    for fileType in fileTypes:
-        # Replace template names
-        findReplace(newRepoPath, source_template_name, newName, fileType)
-        findReplace(newRepoPath, source_template_name.replace(' ', '_'), newNameWithUnderscore, fileType)
-        if template_type == "mod":
-            findReplace(newRepoPath, "ModTemplate", newNameNoSpaces, fileType)
+        if selection == "Enter another repository name...":
+            output_repo_name = questionary.text(
+                "Enter repository name:"
+            ).ask()
+            if not output_repo_name:
+                print(f"{Colors.FAIL}Error: Repository name cannot be empty.{Colors.ENDC}")
+                raise typer.Exit(1)
+        elif selection.endswith(" (current directory)"):
+            output_repo_name = current_repo
         else:
-            findReplace(newRepoPath, "BroTemplate", newNameNoSpaces, fileType)
+            output_repo_name = selection
 
-        # Replace author placeholder
-        findReplace(newRepoPath, "AUTHOR_NAME", authorName, fileType)
+        print(f"{Colors.BLUE}Using output repository: {output_repo_name}{Colors.ENDC}")
 
-        # Replace repository URL with output repository name
-        findReplace(newRepoPath, "REPO_NAME", output_repo_name, fileType)
+    # Get Broforce path from props files
+    broforce_path = get_broforce_path(repos_parent)
 
-    # Special handling for .csproj file references for Bros
-    if template_type == "bro":
-        findReplace(newRepoPath, "BroTemplate.cs", f"{newNameNoSpaces}.cs", "*.csproj")
+    # Check if Broforce path exists
+    if not os.path.exists(broforce_path):
+        print(f"{Colors.FAIL}Error: Broforce path does not exist: {broforce_path}{Colors.ENDC}")
+        raise typer.Exit(1)
 
-        # Get BroMaker version from its Info.json
-        bromaker_info_path = os.path.join(broforce_path, "Mods", "BroMaker", "Info.json")
-        bromaker_version = "2.6.0"  # Default fallback version
+    # Get project type
+    if template_type:
+        pass  # Already have it
+    else:
+        choice = questionary.select(
+            "What would you like to create?",
+            choices=["Mod", "Bro"]
+        ).ask()
 
-        if os.path.exists(bromaker_info_path):
+        if not choice:  # User cancelled
+            raise typer.Exit()
+
+        template_type = choice.lower()
+
+    # Set template parameters based on type
+    if template_type == "mod":
+        source_template_name = "Mod Template"
+    else:
+        source_template_name = "Bro Template"
+
+    # Get the name for the new template
+    if name:
+        newName = name
+    else:
+        newName = questionary.text(f"Enter {template_type} name:").ask()
+        if not newName:
+            print(f"{Colors.FAIL}Error: Name cannot be empty.{Colors.ENDC}")
+            raise typer.Exit(1)
+
+    newNameWithUnderscore = newName.replace(' ', '_')
+    newNameNoSpaces = newName.replace(' ', '')
+
+    # Get the author name
+    if author:
+        authorName = author
+    else:
+        authorName = questionary.text("Enter author name (e.g., YourName):").ask()
+        if not authorName:
+            print(f"{Colors.FAIL}Error: Author name cannot be empty.{Colors.ENDC}")
+            raise typer.Exit(1)
+
+    # Define paths
+    templatePath = os.path.join(template_repo_dir, source_template_name)
+    output_repo_path = os.path.join(repos_parent, output_repo_name)
+
+    # Check if output repository exists
+    if not os.path.exists(output_repo_path):
+        print(f"{Colors.FAIL}Error: Output repository does not exist: {output_repo_path}{Colors.ENDC}")
+        print(f"{Colors.WARNING}Please ensure the repository '{output_repo_name}' exists in: {repos_parent}{Colors.ENDC}")
+        raise typer.Exit(1)
+
+    # Copy BroforceModBuild.targets to output repo Scripts folder (if different repo)
+    if output_repo_path != template_repo_dir:
+        output_scripts_dir = os.path.join(output_repo_path, 'Scripts')
+        if not os.path.exists(output_scripts_dir):
+            os.makedirs(output_scripts_dir)
+            print(f"{Colors.GREEN}Created Scripts directory: {output_scripts_dir}{Colors.ENDC}")
+
+        targets_source = os.path.join(script_dir, 'BroforceModBuild.targets')
+        targets_dest = os.path.join(output_scripts_dir, 'BroforceModBuild.targets')
+
+        if os.path.exists(targets_source):
             try:
-                with open(bromaker_info_path, 'r', encoding='utf-8') as f:
-                    bromaker_info = json.load(f)
-                    bromaker_version = bromaker_info.get('Version', bromaker_version)
-                    print(f"{Colors.GREEN}Detected BroMaker version: {bromaker_version}{Colors.ENDC}")
-            except Exception as e:
-                print(f"{Colors.WARNING}Warning: Could not read BroMaker version from Info.json: {e}{Colors.ENDC}")
-                print(f"{Colors.WARNING}Using default BroMaker version: {bromaker_version}{Colors.ENDC}")
+                # Only copy if destination doesn't exist or is different
+                if not os.path.exists(targets_dest):
+                    shutil.copy2(targets_source, targets_dest)
+                    print(f"{Colors.GREEN}Copied BroforceModBuild.targets to output repository{Colors.ENDC}")
+                else:
+                    # Check if files are identical
+                    if not filecmp.cmp(targets_source, targets_dest, shallow=False):
+                        try:
+                            shutil.copy2(targets_source, targets_dest)
+                            print(f"{Colors.GREEN}Updated BroforceModBuild.targets in output repository{Colors.ENDC}")
+                        except PermissionError:
+                            print(f"{Colors.WARNING}Warning: Could not update BroforceModBuild.targets (file in use){Colors.ENDC}")
+                    else:
+                        print(f"{Colors.BLUE}BroforceModBuild.targets already up-to-date{Colors.ENDC}")
+            except PermissionError:
+                print(f"{Colors.WARNING}Warning: Could not copy BroforceModBuild.targets (file in use){Colors.ENDC}")
         else:
-            print(f"{Colors.WARNING}Warning: BroMaker Info.json not found at {bromaker_info_path}{Colors.ENDC}")
-            print(f"Using default BroMaker version: {bromaker_version}")
+            print(f"{Colors.WARNING}Warning: BroforceModBuild.targets not found in template repo{Colors.ENDC}")
 
-        # Replace BroMaker version placeholder
-        findReplace(newRepoPath, "BROMAKER_VERSION", bromaker_version, "*.json")
+    # Create the release folder structure in output repo
+    releasesPath = os.path.join(output_repo_path, 'Releases')
+    newReleaseFolder = os.path.join(releasesPath, newName)
+    newRepoPath = os.path.join(output_repo_path, newName)
 
-    # Create the Changelog.md file in the Releases folder
-    changelogPath = os.path.join(newReleaseFolder, 'Changelog.md')
-    changelogContent = '''## v1.0.0 (unreleased)
+    # Check if template directory exists
+    if not os.path.exists(templatePath):
+        print(f"{Colors.FAIL}Error: Template directory not found: {templatePath}{Colors.ENDC}")
+        print(f"Please ensure the '{source_template_name}' directory exists in your repository.")
+        raise typer.Exit(1)
+
+    # Create Releases directory if it doesn't exist
+    if not os.path.exists(releasesPath):
+        try:
+            os.makedirs(releasesPath)
+            print(f"{Colors.GREEN}Created Releases directory: {releasesPath}{Colors.ENDC}")
+        except Exception as e:
+            print(f"{Colors.FAIL}Error: Failed to create Releases directory: {e}{Colors.ENDC}")
+            raise typer.Exit(1)
+
+    # Check if destination directories already exist
+    if os.path.exists(newReleaseFolder):
+        print(f"{Colors.FAIL}Error: Release directory already exists: {newReleaseFolder}{Colors.ENDC}")
+        print(f"Please choose a different {template_type} name or remove the existing directory.")
+        raise typer.Exit(1)
+
+    if os.path.exists(newRepoPath):
+        print(f"{Colors.FAIL}Error: Repository directory already exists: {newRepoPath}{Colors.ENDC}")
+        print(f"Please choose a different {template_type} name or remove the existing directory.")
+        raise typer.Exit(1)
+
+    try:
+        # Create the release folder
+        os.makedirs(newReleaseFolder)
+        # Copy the source template to the repo
+        copyanything(templatePath, newRepoPath)
+    except Exception as e:
+        print(f"{Colors.FAIL}Error: Failed to copy template files: {e}{Colors.ENDC}")
+        # Clean up partially created directories
+        if os.path.exists(newReleaseFolder):
+            shutil.rmtree(newReleaseFolder)
+        if os.path.exists(newRepoPath):
+            shutil.rmtree(newRepoPath)
+        raise typer.Exit(1)
+
+    try:
+        # Rename files named with template name (with space)
+        renameFiles(newRepoPath, source_template_name, newName)
+
+        # Also rename files named without space
+        if template_type == "mod":
+            renameFiles(newRepoPath, 'ModTemplate', newNameNoSpaces)
+        else:
+            renameFiles(newRepoPath, 'BroTemplate', newNameNoSpaces)
+
+        # File types to process
+        if template_type == "mod":
+            fileTypes = ["*.csproj", "*.cs", "*.sln", "*.json", "*.xml"]
+        else:
+            fileTypes = ["*.csproj", "*.cs", "*.sln", "*.json"]
+
+        for fileType in fileTypes:
+            # Replace template names
+            findReplace(newRepoPath, source_template_name, newName, fileType)
+            findReplace(newRepoPath, source_template_name.replace(' ', '_'), newNameWithUnderscore, fileType)
+            if template_type == "mod":
+                findReplace(newRepoPath, "ModTemplate", newNameNoSpaces, fileType)
+            else:
+                findReplace(newRepoPath, "BroTemplate", newNameNoSpaces, fileType)
+
+            # Replace author placeholder
+            findReplace(newRepoPath, "AUTHOR_NAME", authorName, fileType)
+
+            # Replace repository URL with output repository name
+            findReplace(newRepoPath, "REPO_NAME", output_repo_name, fileType)
+
+        # Special handling for .csproj file references for Bros
+        if template_type == "bro":
+            findReplace(newRepoPath, "BroTemplate.cs", f"{newNameNoSpaces}.cs", "*.csproj")
+
+            # Get BroMaker version from its Info.json
+            bromaker_info_path = os.path.join(broforce_path, "Mods", "BroMaker", "Info.json")
+            bromaker_version = "2.6.0"  # Default fallback version
+
+            if os.path.exists(bromaker_info_path):
+                try:
+                    with open(bromaker_info_path, 'r', encoding='utf-8') as f:
+                        bromaker_info = json.load(f)
+                        bromaker_version = bromaker_info.get('Version', bromaker_version)
+                        print(f"{Colors.GREEN}Detected BroMaker version: {bromaker_version}{Colors.ENDC}")
+                except Exception as e:
+                    print(f"{Colors.WARNING}Warning: Could not read BroMaker version from Info.json: {e}{Colors.ENDC}")
+                    print(f"{Colors.WARNING}Using default BroMaker version: {bromaker_version}{Colors.ENDC}")
+            else:
+                print(f"{Colors.WARNING}Warning: BroMaker Info.json not found at {bromaker_info_path}{Colors.ENDC}")
+                print(f"Using default BroMaker version: {bromaker_version}")
+
+            # Replace BroMaker version placeholder
+            findReplace(newRepoPath, "BROMAKER_VERSION", bromaker_version, "*.json")
+
+        # Create the Changelog.md file in the Releases folder
+        changelogPath = os.path.join(newReleaseFolder, 'Changelog.md')
+        changelogContent = '''## v1.0.0 (unreleased)
 - Initial release
 '''
 
-    with open(changelogPath, 'w', encoding='utf-8') as changelogFile:
-        changelogFile.write(changelogContent)
+        with open(changelogPath, 'w', encoding='utf-8') as changelogFile:
+            changelogFile.write(changelogContent)
 
-    print(f"\n{Colors.GREEN}{Colors.BOLD}Success! Created new {template_type} '{newName}'{Colors.ENDC}")
-    if args.output_repo:
-        print(f"{Colors.CYAN}Output repository:{Colors.ENDC} {output_repo_name}")
-    print(f"{Colors.CYAN}Source files:{Colors.ENDC} {newRepoPath}")
-    print(f"{Colors.CYAN}Releases folder:{Colors.ENDC} {newReleaseFolder}")
-    print(f"\n{Colors.CYAN}Next steps:{Colors.ENDC}")
-    print(f"  1. Open the project in Visual Studio")
-    print(f"  2. Build the project (builds to game automatically)")
-    print(f"  3. Launch Broforce to test your {template_type}")
+        print(f"\n{Colors.GREEN}{Colors.BOLD}Success! Created new {template_type} '{newName}'{Colors.ENDC}")
+        if output_repo:
+            print(f"{Colors.CYAN}Output repository:{Colors.ENDC} {output_repo_name}")
+        print(f"{Colors.CYAN}Source files:{Colors.ENDC} {newRepoPath}")
+        print(f"{Colors.CYAN}Releases folder:{Colors.ENDC} {newReleaseFolder}")
+        print(f"\n{Colors.CYAN}Next steps:{Colors.ENDC}")
+        print(f"  1. Open the project in Visual Studio")
+        print(f"  2. Build the project (builds to game automatically)")
+        print(f"  3. Launch Broforce to test your {template_type}")
 
-except Exception as e:
-    print(f"{Colors.FAIL}Error: Failed during file processing: {e}{Colors.ENDC}")
-    import traceback
-    traceback.print_exc()
-    sys.exit(1)
+    except Exception as e:
+        print(f"{Colors.FAIL}Error: Failed during file processing: {e}{Colors.ENDC}")
+        import traceback
+        traceback.print_exc()
+        raise typer.Exit(1)
+
+
+# Typer CLI application
+app = typer.Typer(
+    help="Tool for creating Broforce mods and packaging for Thunderstore",
+    add_completion=True,
+    context_settings={"help_option_names": ["-h", "--help"]},
+)
+
+
+def _get_paths():
+    """Get common paths used by commands"""
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    template_repo_dir = os.path.dirname(script_dir)
+    repos_parent = os.path.dirname(template_repo_dir)
+    return script_dir, template_repo_dir, repos_parent
+
+
+def _get_repos_for_completion(repos_parent: str) -> list[str]:
+    """Get repos to use for completion - current repo if inside one, otherwise all configured repos"""
+    current_repo = detect_current_repo(repos_parent)
+    if current_repo:
+        return [current_repo]
+    config = load_config()
+    return config.get('repos', [])
+
+
+def _complete_project_names_without_metadata(incomplete: str) -> list[str]:
+    """Autocompletion for project names (only projects WITHOUT Thunderstore metadata)"""
+    _, _, repos_parent = _get_paths()
+    repos = _get_repos_for_completion(repos_parent)
+    projects = find_projects(repos_parent, repos, exclude_with_metadata=True)
+    return [p[0] for p in projects if p[0].lower().startswith(incomplete.lower())]
+
+
+def _complete_project_names_with_metadata(incomplete: str) -> list[str]:
+    """Autocompletion for project names (only projects with Thunderstore metadata)"""
+    _, _, repos_parent = _get_paths()
+    repos = _get_repos_for_completion(repos_parent)
+    projects = find_projects(repos_parent, repos, require_metadata=True)
+    return [p[0] for p in projects if p[0].lower().startswith(incomplete.lower())]
+
+
+def _complete_project_type(incomplete: str) -> list[str]:
+    """Autocompletion for project type (mod or bro)"""
+    types = ["mod", "bro"]
+    return [t for t in types if t.startswith(incomplete.lower())]
+
+
+def _complete_repos(incomplete: str) -> list[str]:
+    """Autocompletion for repository names"""
+    config = load_config()
+    repos = config.get('repos', [])
+    return [r for r in repos if r.lower().startswith(incomplete.lower())]
+
+
+def _complete_none(incomplete: str) -> list[str]:
+    """Return empty list to prevent file completion fallback"""
+    return []
+
+
+@app.callback(invoke_without_command=True)
+def main(
+    ctx: typer.Context,
+    clear_cache: bool = typer.Option(False, "--clear-cache", help="Clear dependency version cache"),
+    add_repo: Optional[str] = typer.Option(None, "--add-repo", help="Add repo to config (uses current if empty string)", autocompletion=_complete_none),
+):
+    """Tool for creating Broforce mods and packaging for Thunderstore."""
+    script_dir, template_repo_dir, repos_parent = _get_paths()
+
+    # Handle --clear-cache flag
+    if clear_cache:
+        if os.path.exists(CACHE_FILE):
+            try:
+                os.remove(CACHE_FILE)
+                print(f"{Colors.GREEN}Dependency cache cleared: {CACHE_FILE}{Colors.ENDC}")
+            except OSError as e:
+                print(f"{Colors.FAIL}Error clearing cache: {e}{Colors.ENDC}")
+                raise typer.Exit(1)
+        else:
+            print(f"{Colors.BLUE}Cache file does not exist: {CACHE_FILE}{Colors.ENDC}")
+        raise typer.Exit()
+
+    # Handle --add-repo flag
+    if add_repo is not None:
+        # Determine repo name to add
+        if add_repo == '':
+            # No argument provided, detect from current directory
+            repo_name = detect_current_repo(repos_parent)
+            if not repo_name:
+                print(f"{Colors.FAIL}Error: Could not detect current repo from working directory{Colors.ENDC}")
+                print(f"Run from within a repo directory, or specify repo name: --add-repo RepoName")
+                raise typer.Exit(1)
+        else:
+            repo_name = add_repo
+
+        # Load current config and add repo
+        config = load_config()
+        repos = config.get('repos', [])
+
+        if repo_name in repos:
+            print(f"{Colors.BLUE}'{repo_name}' is already in configured repos{Colors.ENDC}")
+        else:
+            repos.append(repo_name)
+            config['repos'] = repos
+            if save_config(config):
+                print(f"{Colors.GREEN}Added '{repo_name}' to configured repos{Colors.ENDC}")
+            else:
+                print(f"{Colors.FAIL}Error: Failed to save config file{Colors.ENDC}")
+                raise typer.Exit(1)
+
+        print(f"\n{Colors.CYAN}Configured repos:{Colors.ENDC}")
+        for r in repos:
+            print(f"  - {r}")
+        raise typer.Exit()
+
+    # If no subcommand, show interactive menu
+    if ctx.invoked_subcommand is None:
+        print(f"{Colors.HEADER}Broforce Mod Tools{Colors.ENDC}\n")
+
+        choice = questionary.select(
+            "What would you like to do?",
+            choices=[
+                "Create new mod / bro project",
+                "Setup Thunderstore metadata for an existing project",
+                "Package for releasing on Thunderstore",
+                "Show help"
+            ]
+        ).ask()
+
+        if not choice:  # User cancelled
+            raise typer.Exit()
+
+        if choice == "Show help":
+            # Show help by invoking --help
+            print(ctx.get_help())
+            raise typer.Exit()
+        elif choice == "Create new mod / bro project":
+            do_create_project(None, None, None, None)
+        elif choice == "Setup Thunderstore metadata for an existing project":
+            selected = select_projects_interactive(repos_parent, 'init', use_all_repos=False)
+            if not selected:
+                raise typer.Exit()
+            for project_name, repo in selected:
+                if len(selected) > 1:
+                    print(f"\n{Colors.HEADER}{'='*50}{Colors.ENDC}")
+                do_init_thunderstore(project_name, script_dir, repos_parent)
+        elif choice == "Package for releasing on Thunderstore":
+            selected = select_projects_interactive(repos_parent, 'package', use_all_repos=False)
+            if not selected:
+                raise typer.Exit()
+            for project_name, repo in selected:
+                if len(selected) > 1:
+                    print(f"\n{Colors.HEADER}{'='*50}{Colors.ENDC}")
+                do_package(project_name, script_dir, repos_parent, None)
+
+
+@app.command()
+def create(
+    type: Optional[str] = typer.Option(None, "-t", "--type", help="Project type: mod or bro", autocompletion=_complete_project_type),
+    name: Optional[str] = typer.Option(None, "-n", "--name", help="Project name", autocompletion=_complete_none),
+    author: Optional[str] = typer.Option(None, "-a", "--author", help="Author name", autocompletion=_complete_none),
+    output_repo: Optional[str] = typer.Option(None, "-o", "--output-repo", help="Target repository", autocompletion=_complete_repos),
+):
+    """Create a new mod or bro project from templates."""
+    do_create_project(type, name, author, output_repo)
+
+
+@app.command("init-thunderstore")
+def init_thunderstore_cmd(
+    project_name: Optional[str] = typer.Argument(None, help="Project name (optional)", autocompletion=_complete_project_names_without_metadata),
+    all_repos: bool = typer.Option(False, "--all-repos", help="Show projects from all configured repos"),
+):
+    """Initialize Thunderstore metadata for an existing project."""
+    script_dir, template_repo_dir, repos_parent = _get_paths()
+
+    if project_name:
+        do_init_thunderstore(project_name, script_dir, repos_parent)
+    else:
+        selected = select_projects_interactive(repos_parent, 'init', use_all_repos=all_repos)
+        if not selected:
+            raise typer.Exit()
+        for proj_name, repo in selected:
+            if len(selected) > 1:
+                print(f"\n{Colors.HEADER}{'='*50}{Colors.ENDC}")
+            do_init_thunderstore(proj_name, script_dir, repos_parent)
+
+
+@app.command()
+def package(
+    project_name: Optional[str] = typer.Argument(None, help="Project name (optional)", autocompletion=_complete_project_names_with_metadata),
+    version: Optional[str] = typer.Option(None, "--version", help="Override version", autocompletion=_complete_none),
+    all_repos: bool = typer.Option(False, "--all-repos", help="Show projects from all configured repos"),
+):
+    """Create a Thunderstore-ready ZIP package."""
+    script_dir, template_repo_dir, repos_parent = _get_paths()
+
+    if project_name:
+        do_package(project_name, script_dir, repos_parent, version)
+    else:
+        selected = select_projects_interactive(repos_parent, 'package', use_all_repos=all_repos)
+        if not selected:
+            raise typer.Exit()
+        for proj_name, repo in selected:
+            if len(selected) > 1:
+                print(f"\n{Colors.HEADER}{'='*50}{Colors.ENDC}")
+            do_package(proj_name, script_dir, repos_parent, version)
+
+
+def main():
+    """Entry point for the CLI"""
+    app()
+
+
+if __name__ == "__main__":
+    main()

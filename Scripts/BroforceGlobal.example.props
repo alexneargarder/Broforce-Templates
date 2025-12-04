@@ -38,9 +38,12 @@
     <!-- Library path for DLL references (adjust to your libs location) -->
     <LibPath>$(MSBuildThisFileDirectory)YourRepo/libs</LibPath>
 
-    <!-- Library paths (if Bro-Maker and RocketLib are in same parent directory as repos) -->
-    <BroMakerLibPath>$(MSBuildThisFileDirectory)Bro-Maker/BroMakerLib/_ModContent/BroMakerLib.dll</BroMakerLibPath>
-    <RocketLibPath>$(MSBuildThisFileDirectory)RocketLib/RocketLib/_ModContent/RocketLib.dll</RocketLibPath>
+    <!-- Point these to your installed mods (Thunderstore structure) -->
+    <BroMakerLibPath>$(BroforcePath)\Mods\BroMaker-BroMaker\BroMaker\BroMakerLib.dll</BroMakerLibPath>
+    <RocketLibPath>$(BroforcePath)\Mods\RocketLib-RocketLib\RocketLib\RocketLib.dll</RocketLibPath>
+    <!-- If building from source repos: -->
+    <!-- <BroMakerLibPath>$(MSBuildThisFileDirectory)Bro-Maker/BroMakerLib/_ModContent/BroMakerLib.dll</BroMakerLibPath> -->
+    <!-- <RocketLibPath>$(MSBuildThisFileDirectory)RocketLib/RocketLib/_ModContent/RocketLib.dll</RocketLibPath> -->
 
   </PropertyGroup>
 
