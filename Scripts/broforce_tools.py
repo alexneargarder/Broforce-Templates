@@ -301,10 +301,10 @@ def get_broforce_path(repos_parent):
     print()
     path = questionary.text("Enter Broforce installation path:").ask()
     if not path:
-        sys.exit(0)
+        raise typer.Exit()
     if not os.path.exists(path):
         print(f"{Colors.FAIL}Error: Path does not exist: {path}{Colors.ENDC}")
-        sys.exit(1)
+        raise typer.Exit(1)
     return path
 
 def get_bromaker_lib_path(repos_parent, broforce_path):
@@ -900,15 +900,15 @@ def do_init_thunderstore(project_name, script_dir, repos_parent):
     if not project_path or not releases_path:
         print(f"{Colors.FAIL}Error: Could not find project '{project_name}'{Colors.ENDC}")
         print(f"Searched in: {repos_parent}")
-        sys.exit(1)
+        raise typer.Exit(1)
 
-    print(f"{Colors.GREEN}Found project in: {output_repo}{Colors.ENDC}")
+    print(f"{Colors.BLUE}Found project in: {output_repo}{Colors.ENDC}")
 
     # Detect project type
     project_type = detect_project_type(project_path)
     if not project_type:
         print(f"{Colors.FAIL}Error: Could not detect project type (no _ModContent or missing detection files){Colors.ENDC}")
-        sys.exit(1)
+        raise typer.Exit(1)
 
     print(f"{Colors.BLUE}Detected project type: {project_type}{Colors.ENDC}")
 
@@ -928,6 +928,8 @@ def do_init_thunderstore(project_name, script_dir, repos_parent):
             default=default_namespace,
             validate=lambda text: validate_package_name(text)[0] if text else True
         ).ask()
+        if namespace is None:
+            raise typer.Exit()
         if not namespace:
             namespace = default_namespace
     else:
@@ -935,8 +937,8 @@ def do_init_thunderstore(project_name, script_dir, repos_parent):
             "Namespace/Author (e.g., AlexNeargarder):",
             validate=lambda text: validate_package_name(text)[0]
         ).ask()
-        if not namespace:
-            sys.exit(0)
+        if namespace is None or not namespace:
+            raise typer.Exit()
 
     # Package name
     suggested_name = sanitize_package_name(project_name)
@@ -945,11 +947,15 @@ def do_init_thunderstore(project_name, script_dir, repos_parent):
         default=suggested_name,
         validate=lambda text: validate_package_name(text)[0] if text else True
     ).ask()
+    if package_name is None:
+        raise typer.Exit()
     if not package_name:
         package_name = suggested_name
 
     # Description
-    description = questionary.text("Description (max 250 chars):").ask() or ""
+    description = questionary.text("Description (max 250 chars):").ask()
+    if description is None:
+        raise typer.Exit()
     if len(description) > 250:
         print(f"{Colors.WARNING}Warning: Description truncated to 250 characters{Colors.ENDC}")
         description = description[:250]
@@ -960,10 +966,15 @@ def do_init_thunderstore(project_name, script_dir, repos_parent):
             f"Website/GitHub URL [{default_website}]:",
             default=default_website
         ).ask()
+        if website_url is None:
+            raise typer.Exit()
         if not website_url:
             website_url = default_website
     else:
-        website_url = questionary.text("Website/GitHub URL:").ask() or ""
+        website_url = questionary.text("Website/GitHub URL:").ask()
+        if website_url is None:
+            raise typer.Exit()
+        website_url = website_url or ""
 
     # Check if Changelog.md exists, create if missing
     changelog_path = os.path.join(releases_path, 'Changelog.md')
@@ -975,7 +986,7 @@ def do_init_thunderstore(project_name, script_dir, repos_parent):
     # Detect dependencies from .csproj
     detected_deps = detect_dependencies_from_csproj(project_path)
     if len(detected_deps) > 1:  # More than just UMM
-        print(f"{Colors.CYAN}Detected dependencies:{Colors.ENDC}")
+        print(f"{Colors.BLUE}Detected dependencies:{Colors.ENDC}")
         for dep in detected_deps:
             if dep != DEPENDENCIES['UMM']:
                 print(f"  - {dep}")
@@ -1044,7 +1055,7 @@ def do_init_thunderstore(project_name, script_dir, repos_parent):
     print(f"  1. Edit {releases_path}/README.md")
     print(f"  2. Replace icon.png with custom icon")
     print(f"  3. Review manifest.json dependencies")
-    print(f"  4. Run: python create-project.py package \"{project_name}\"")
+    print(f"  4. Run: bt package \"{project_name}\"")
 
 def do_package(project_name, script_dir, repos_parent, version_override=None):
     """Create Thunderstore package for an existing project"""
@@ -1089,7 +1100,7 @@ def do_package(project_name, script_dir, repos_parent, version_override=None):
 
     if not project_path or not releases_path:
         print(f"{Colors.FAIL}Error: Could not find project '{project_name}'{Colors.ENDC}")
-        sys.exit(1)
+        raise typer.Exit(1)
 
     # Validate metadata exists
     manifest_path = os.path.join(releases_path, 'manifest.json')
@@ -1099,28 +1110,28 @@ def do_package(project_name, script_dir, repos_parent, version_override=None):
 
     if not os.path.exists(manifest_path):
         print(f"{Colors.FAIL}Error: manifest.json not found{Colors.ENDC}")
-        print(f"Run: python create-project.py init-thunderstore \"{project_name}\"")
-        sys.exit(1)
+        print(f"Run: bt init-thunderstore \"{project_name}\"")
+        raise typer.Exit(1)
 
     if not os.path.exists(readme_path):
         print(f"{Colors.FAIL}Error: README.md not found{Colors.ENDC}")
-        sys.exit(1)
+        raise typer.Exit(1)
 
     if not os.path.exists(icon_path):
         print(f"{Colors.FAIL}Error: icon.png not found{Colors.ENDC}")
-        sys.exit(1)
+        raise typer.Exit(1)
 
     # Detect project type
     project_type = detect_project_type(project_path)
     if not project_type:
         print(f"{Colors.FAIL}Error: Could not detect project type{Colors.ENDC}")
-        sys.exit(1)
+        raise typer.Exit(1)
 
     # Validate DLL exists
     source_dir = get_source_directory(project_path)
     if not source_dir:
         print(f"{Colors.FAIL}Error: Could not find source directory with _ModContent{Colors.ENDC}")
-        sys.exit(1)
+        raise typer.Exit(1)
 
     modcontent_path = os.path.join(source_dir, '_ModContent')
     dll_path = find_dll_in_modcontent(modcontent_path)
@@ -1128,7 +1139,7 @@ def do_package(project_name, script_dir, repos_parent, version_override=None):
     if not dll_path:
         print(f"{Colors.FAIL}Error: No DLL found in _ModContent{Colors.ENDC}")
         print(f"Build the project first")
-        sys.exit(1)
+        raise typer.Exit(1)
 
     # Check if icon is placeholder
     icon_template = os.path.join(template_repo_dir, 'ThunderstorePackage', 'icon.png')
@@ -1169,7 +1180,7 @@ def do_package(project_name, script_dir, repos_parent, version_override=None):
         if not valid_versions:
             print(f"{Colors.FAIL}Error: Could not find version in any file{Colors.ENDC}")
             print(f"Expected version in Changelog.md, manifest.json, or Info.json/.mod.json")
-            sys.exit(1)
+            raise typer.Exit(1)
 
         # Find the highest version
         highest_version = None
@@ -1342,6 +1353,35 @@ def do_package(project_name, script_dir, repos_parent, version_override=None):
         version_file_name = 'Info.json' if project_type == 'mod' else '.mod.json'
         print(f"{Colors.WARNING}Warning: Could not find {version_file_name} to sync version{Colors.ENDC}")
 
+    # For bros, check if BroMakerVersion is outdated
+    if project_type == 'bro' and version_file_path:
+        try:
+            with open(version_file_path, 'r', encoding='utf-8') as f:
+                mod_json_data = json.load(f)
+
+            current_bromaker_version = mod_json_data.get('BroMakerVersion', None)
+            if current_bromaker_version:
+                latest_bromaker_version = DEPENDENCY_VERSIONS.get('BroMaker', current_bromaker_version)
+
+                if current_bromaker_version != latest_bromaker_version:
+                    print(f"\n{Colors.WARNING}Outdated BroMakerVersion in {os.path.basename(version_file_path)}:{Colors.ENDC}")
+                    print(f"  {current_bromaker_version} → {latest_bromaker_version}")
+
+                    update_bromaker = questionary.confirm(
+                        "Update BroMakerVersion to latest?",
+                        default=True
+                    ).ask()
+
+                    if update_bromaker is None:
+                        raise typer.Exit()
+                    elif update_bromaker:
+                        mod_json_data['BroMakerVersion'] = latest_bromaker_version
+                        with open(version_file_path, 'w', encoding='utf-8') as f:
+                            json.dump(mod_json_data, f, indent=2)
+                        print(f"{Colors.GREEN}Updated BroMakerVersion to {latest_bromaker_version}{Colors.ENDC}")
+        except (json.JSONDecodeError, OSError):
+            pass  # Silently continue if we can't read/parse the file
+
     # Create package filename
     zip_filename = f"{namespace}-{package_name}-{version}.zip"
     zip_path = os.path.join(releases_path, zip_filename)
@@ -1493,14 +1533,6 @@ def do_create_project(template_type: Optional[str], name: Optional[str], author:
             output_repo_name = selection
 
         print(f"{Colors.BLUE}Using output repository: {output_repo_name}{Colors.ENDC}")
-
-    # Get Broforce path from props files
-    broforce_path = get_broforce_path(repos_parent)
-
-    # Check if Broforce path exists
-    if not os.path.exists(broforce_path):
-        print(f"{Colors.FAIL}Error: Broforce path does not exist: {broforce_path}{Colors.ENDC}")
-        raise typer.Exit(1)
 
     # Get project type
     if template_type:
@@ -1664,22 +1696,9 @@ def do_create_project(template_type: Optional[str], name: Optional[str], author:
         if template_type == "bro":
             findReplace(newRepoPath, "BroTemplate.cs", f"{newNameNoSpaces}.cs", "*.csproj")
 
-            # Get BroMaker version from its Info.json
-            bromaker_info_path = os.path.join(broforce_path, "Mods", "BroMaker", "Info.json")
-            bromaker_version = "2.6.0"  # Default fallback version
-
-            if os.path.exists(bromaker_info_path):
-                try:
-                    with open(bromaker_info_path, 'r', encoding='utf-8') as f:
-                        bromaker_info = json.load(f)
-                        bromaker_version = bromaker_info.get('Version', bromaker_version)
-                        print(f"{Colors.GREEN}Detected BroMaker version: {bromaker_version}{Colors.ENDC}")
-                except Exception as e:
-                    print(f"{Colors.WARNING}Warning: Could not read BroMaker version from Info.json: {e}{Colors.ENDC}")
-                    print(f"{Colors.WARNING}Using default BroMaker version: {bromaker_version}{Colors.ENDC}")
-            else:
-                print(f"{Colors.WARNING}Warning: BroMaker Info.json not found at {bromaker_info_path}{Colors.ENDC}")
-                print(f"Using default BroMaker version: {bromaker_version}")
+            # Get BroMaker version from Thunderstore API (cached)
+            dep_versions = get_dependency_versions()
+            bromaker_version = dep_versions.get('BroMaker', '1.0.0')
 
             # Replace BroMaker version placeholder
             findReplace(newRepoPath, "BROMAKER_VERSION", bromaker_version, "*.json")
@@ -1698,10 +1717,24 @@ def do_create_project(template_type: Optional[str], name: Optional[str], author:
             print(f"{Colors.CYAN}Output repository:{Colors.ENDC} {output_repo_name}")
         print(f"{Colors.CYAN}Source files:{Colors.ENDC} {newRepoPath}")
         print(f"{Colors.CYAN}Releases folder:{Colors.ENDC} {newReleaseFolder}")
-        print(f"\n{Colors.CYAN}Next steps:{Colors.ENDC}")
-        print(f"  1. Open the project in Visual Studio")
-        print(f"  2. Build the project (builds to game automatically)")
-        print(f"  3. Launch Broforce to test your {template_type}")
+
+        # Ask if user wants to set up Thunderstore metadata
+        setup_thunderstore = questionary.confirm(
+            "Set up Thunderstore metadata now?",
+            default=True
+        ).ask()
+
+        if setup_thunderstore is None:
+            raise typer.Exit()
+        elif setup_thunderstore:
+            print()
+            do_init_thunderstore(newName, script_dir, repos_parent)
+        else:
+            print(f"\n{Colors.CYAN}Next steps:{Colors.ENDC}")
+            print(f"  1. Open the project in Visual Studio")
+            print(f"  2. Build the project (builds to game automatically)")
+            print(f"  3. Launch Broforce to test your {template_type}")
+            print(f"  4. Run 'bt init-thunderstore' when ready to publish")
 
     except Exception as e:
         print(f"{Colors.FAIL}Error: Failed during file processing: {e}{Colors.ENDC}")
