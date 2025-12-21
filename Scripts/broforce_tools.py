@@ -460,8 +460,17 @@ def detect_project_type(project_path):
 
     return None
 
+def find_changelog(releases_path):
+    """Find changelog file, checking both Changelog.md and CHANGELOG.md"""
+    for name in ['Changelog.md', 'CHANGELOG.md']:
+        path = os.path.join(releases_path, name)
+        if os.path.exists(path):
+            return path
+    return None
+
+
 def get_version_from_changelog(changelog_path):
-    """Parse version from Changelog.md"""
+    """Parse version from Changelog.md or CHANGELOG.md"""
     if not os.path.exists(changelog_path):
         return None
 
@@ -482,7 +491,7 @@ def get_version_from_changelog(changelog_path):
 
         return None
     except Exception as e:
-        print(f"{Colors.WARNING}Warning: Could not parse Changelog.md: {e}{Colors.ENDC}")
+        print(f"{Colors.WARNING}Warning: Could not parse changelog: {e}{Colors.ENDC}")
         return None
 
 def find_dll_in_modcontent(modcontent_path):
@@ -976,10 +985,11 @@ def do_init_thunderstore(project_name, script_dir, repos_parent):
             raise typer.Exit()
         website_url = website_url or ""
 
-    # Check if Changelog.md exists, create if missing
-    changelog_path = os.path.join(releases_path, 'Changelog.md')
-    if not os.path.exists(changelog_path):
-        print(f"{Colors.WARNING}Changelog.md not found, creating default{Colors.ENDC}")
+    # Check if changelog exists (either Changelog.md or CHANGELOG.md), create if missing
+    changelog_path = find_changelog(releases_path)
+    if not changelog_path:
+        changelog_path = os.path.join(releases_path, 'Changelog.md')
+        print(f"{Colors.WARNING}Changelog not found, creating default{Colors.ENDC}")
         with open(changelog_path, 'w', encoding='utf-8') as f:
             f.write('## v1.0.0 (unreleased)\n- Initial release\n')
 
@@ -1106,7 +1116,7 @@ def do_package(project_name, script_dir, repos_parent, version_override=None):
     manifest_path = os.path.join(releases_path, 'manifest.json')
     readme_path = os.path.join(releases_path, 'README.md')
     icon_path = os.path.join(releases_path, 'icon.png')
-    changelog_path = os.path.join(releases_path, 'Changelog.md')
+    changelog_path = find_changelog(releases_path)
 
     if not os.path.exists(manifest_path):
         print(f"{Colors.FAIL}Error: manifest.json not found{Colors.ENDC}")
@@ -1119,6 +1129,10 @@ def do_package(project_name, script_dir, repos_parent, version_override=None):
 
     if not os.path.exists(icon_path):
         print(f"{Colors.FAIL}Error: icon.png not found{Colors.ENDC}")
+        raise typer.Exit(1)
+
+    if not changelog_path:
+        print(f"{Colors.FAIL}Error: Changelog.md or CHANGELOG.md not found{Colors.ENDC}")
         raise typer.Exit(1)
 
     # Detect project type
@@ -1147,6 +1161,8 @@ def do_package(project_name, script_dir, repos_parent, version_override=None):
         print(f"{Colors.WARNING}⚠️  Warning: Using placeholder icon{Colors.ENDC}")
 
     # Get version from all sources and find the highest
+    changelog_name = os.path.basename(changelog_path)
+
     if version_override:
         version = version_override
         print(f"{Colors.CYAN}Using version override: {version}{Colors.ENDC}")
@@ -1169,7 +1185,7 @@ def do_package(project_name, script_dir, repos_parent, version_override=None):
 
         # Find highest version
         versions = {
-            'Changelog.md': changelog_version,
+            changelog_name: changelog_version,
             'manifest.json': manifest_version,
             'Info.json/.mod.json': info_version
         }
@@ -1179,7 +1195,7 @@ def do_package(project_name, script_dir, repos_parent, version_override=None):
 
         if not valid_versions:
             print(f"{Colors.FAIL}Error: Could not find version in any file{Colors.ENDC}")
-            print(f"Expected version in Changelog.md, manifest.json, or Info.json/.mod.json")
+            print(f"Expected version in {changelog_name}, manifest.json, or Info.json/.mod.json")
             raise typer.Exit(1)
 
         # Find the highest version
@@ -1197,10 +1213,10 @@ def do_package(project_name, script_dir, repos_parent, version_override=None):
 
         # Only warn if Changelog is behind (user forgot to update it)
         if changelog_version and compare_versions(changelog_version, version) < 0:
-            print(f"\n{Colors.WARNING}Warning: Changelog.md is out of date!{Colors.ENDC}")
+            print(f"\n{Colors.WARNING}Warning: {changelog_name} is out of date!{Colors.ENDC}")
             print(f"{Colors.CYAN}Changelog version: {changelog_version}{Colors.ENDC}")
             print(f"{Colors.CYAN}Highest version found: {version} (from {highest_source}){Colors.ENDC}")
-            print(f"\n{Colors.WARNING}Did you forget to update Changelog.md?{Colors.ENDC}")
+            print(f"\n{Colors.WARNING}Did you forget to update {changelog_name}?{Colors.ENDC}")
 
             continue_package = questionary.confirm(
                 f"Continue packaging with version {version}?",
@@ -1209,7 +1225,7 @@ def do_package(project_name, script_dir, repos_parent, version_override=None):
 
             if continue_package is None or not continue_package:
                 print(f"\n{Colors.CYAN}Packaging cancelled.{Colors.ENDC}")
-                print(f"Update Changelog.md to version {version} before packaging.")
+                print(f"Update {changelog_name} to version {version} before packaging.")
                 raise typer.Exit()
 
     # Load and update manifest
@@ -1400,7 +1416,7 @@ def do_package(project_name, script_dir, repos_parent, version_override=None):
             raise typer.Exit()
         elif not overwrite:
             print(f"\n{Colors.CYAN}Packaging cancelled.{Colors.ENDC}")
-            print(f"To create a new package, update the version in Changelog.md")
+            print(f"To create a new package, update the version in {changelog_name}")
             raise typer.Exit()
 
         # User confirmed - delete old package (don't archive it)
@@ -1441,11 +1457,11 @@ def do_package(project_name, script_dir, repos_parent, version_override=None):
             flags=re.IGNORECASE
         )
 
-        # Update source Changelog.md if it was modified
+        # Update source changelog if it was modified
         if changelog_cleaned != changelog_content:
             with open(changelog_path, 'w', encoding='utf-8') as f:
                 f.write(changelog_cleaned)
-            print(f"{Colors.GREEN}Removed (unreleased) tag from Changelog.md{Colors.ENDC}")
+            print(f"{Colors.GREEN}Removed (unreleased) tag from {changelog_name}{Colors.ENDC}")
 
         # Copy cleaned changelog to package
         with open(os.path.join(temp_dir, 'CHANGELOG.md'), 'w', encoding='utf-8') as f:
