@@ -22,7 +22,7 @@ except ImportError:
 FALLBACK_DEPENDENCY_VERSIONS = {
     'UMM': '1.0.2',
     'RocketLib': '2.4.0',
-    'BroMaker': '1.0.0',  # Placeholder - not yet uploaded
+    'BroMaker': '2.6.0',
 }
 
 # Thunderstore package info (namespace/package name)
@@ -1714,7 +1714,7 @@ def do_create_project(template_type: Optional[str], name: Optional[str], author:
 
             # Get BroMaker version from Thunderstore API (cached)
             dep_versions = get_dependency_versions()
-            bromaker_version = dep_versions.get('BroMaker', '1.0.0')
+            bromaker_version = dep_versions.get('BroMaker', '2.6.0')
 
             # Replace BroMaker version placeholder
             findReplace(newRepoPath, "BROMAKER_VERSION", bromaker_version, "*.json")
