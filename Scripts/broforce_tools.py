@@ -69,6 +69,13 @@ def get_configured_repos():
     return config.get('repos', [])
 
 
+def get_ignored_projects(repo_name):
+    """Get list of ignored project names for a repo"""
+    config = load_config()
+    ignore_config = config.get('ignore', {})
+    return ignore_config.get(repo_name, [])
+
+
 def get_repos_to_search(repos_parent, use_all_repos=False):
     """Get list of repos to search for projects.
 
@@ -713,6 +720,7 @@ def find_projects(repos_parent, repos, require_metadata=False, exclude_with_meta
     projects = []
 
     for repo in repos:
+        ignored_projects = get_ignored_projects(repo)
         repo_path = os.path.join(repos_parent, repo)
         if not os.path.exists(repo_path):
             continue
@@ -755,6 +763,8 @@ def find_projects(repos_parent, repos, require_metadata=False, exclude_with_meta
                 has_metadata = _project_has_metadata(repos_parent, repo, item)
 
                 # Apply filters
+                if item in ignored_projects:
+                    continue
                 if require_metadata and not has_metadata:
                     continue
                 if exclude_with_metadata and has_metadata:

@@ -59,6 +59,9 @@ Create `Scripts/broforce-tools.json` to configure repos and defaults:
 ```json
 {
   "repos": ["BroforceMods", "RocketLib", "Bro-Maker"],
+  "ignore": {
+    "BroforceMods": ["ExampleMod"]
+  },
   "defaults": {
     "namespace": "YourName",
     "website_url": "https://github.com/yourname/repo"
@@ -67,6 +70,7 @@ Create `Scripts/broforce-tools.json` to configure repos and defaults:
 ```
 
 - `repos` - Repositories to search for projects
+- `ignore` - Per-repo lists of project names to hide from selection menus
 - `defaults.namespace` - Pre-filled namespace for init-thunderstore
 - `defaults.website_url` - Pre-filled URL for init-thunderstore
 
