@@ -1794,12 +1794,19 @@ def _get_repos_for_completion(repos_parent: str) -> list[str]:
     return config.get('repos', [])
 
 
+def _escape_for_completion(name: str) -> str:
+    """Quote project names with spaces for shell completion display"""
+    if ' ' in name:
+        return f'"{name}"'
+    return name
+
+
 def _complete_project_names_without_metadata(incomplete: str) -> list[str]:
     """Autocompletion for project names (only projects WITHOUT Thunderstore metadata)"""
     _, _, repos_parent = _get_paths()
     repos = _get_repos_for_completion(repos_parent)
     projects = find_projects(repos_parent, repos, exclude_with_metadata=True)
-    return [p[0] for p in projects if p[0].lower().startswith(incomplete.lower())]
+    return [_escape_for_completion(p[0]) for p in projects]
 
 
 def _complete_project_names_with_metadata(incomplete: str) -> list[str]:
@@ -1807,7 +1814,7 @@ def _complete_project_names_with_metadata(incomplete: str) -> list[str]:
     _, _, repos_parent = _get_paths()
     repos = _get_repos_for_completion(repos_parent)
     projects = find_projects(repos_parent, repos, require_metadata=True)
-    return [p[0] for p in projects if p[0].lower().startswith(incomplete.lower())]
+    return [_escape_for_completion(p[0]) for p in projects]
 
 
 def _complete_project_type(incomplete: str) -> list[str]:
