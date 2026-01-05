@@ -1,0 +1,62 @@
+#!/bin/bash
+# Bash completion for broforce-tools
+
+_get_projects() {
+    local mode="$1"
+    python3 -m broforce_tools.completion_helper "$mode" 2>/dev/null
+}
+
+_broforce_tools_completions()
+{
+    local cur prev commands
+    COMPREPLY=()
+    cur="${COMP_WORDS[COMP_CWORD]}"
+    prev="${COMP_WORDS[COMP_CWORD-1]}"
+    commands="create init-thunderstore package"
+
+    # Complete subcommands
+    if [ $COMP_CWORD -eq 1 ]; then
+        COMPREPLY=($(compgen -W "$commands --help --clear-cache --add-repo" -- "$cur"))
+        return 0
+    fi
+
+    local subcommand="${COMP_WORDS[1]}"
+
+    case "$subcommand" in
+        create)
+            if [[ "$prev" == "-t" ]] || [[ "$prev" == "--type" ]]; then
+                COMPREPLY=($(compgen -W "mod bro" -- "$cur"))
+            elif [[ "$prev" == "-o" ]] || [[ "$prev" == "--output-repo" ]]; then
+                local IFS=$'\n'
+                COMPREPLY=($(_get_projects repos))
+            elif [[ "$cur" == -* ]]; then
+                COMPREPLY=($(compgen -W "-t --type -n --name -a --author -o --output-repo --help" -- "$cur"))
+            fi
+            ;;
+        init-thunderstore)
+            if [[ "$cur" == -* ]]; then
+                COMPREPLY=($(compgen -W "--all-repos --help" -- "$cur"))
+            else
+                compopt -o filenames 2>/dev/null
+                local IFS=$'\n'
+                COMPREPLY=($(_get_projects init))
+            fi
+            ;;
+        package)
+            if [[ "$prev" == "--version" ]]; then
+                return 0
+            elif [[ "$cur" == -* ]]; then
+                COMPREPLY=($(compgen -W "--version --all-repos --help" -- "$cur"))
+            else
+                compopt -o filenames 2>/dev/null
+                local IFS=$'\n'
+                COMPREPLY=($(_get_projects package))
+            fi
+            ;;
+    esac
+
+    return 0
+}
+
+complete -F _broforce_tools_completions broforce-tools
+complete -F _broforce_tools_completions bt
