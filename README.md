@@ -32,18 +32,23 @@ See `Scripts/LocalBroforcePath.example.props` and `Scripts/BroforceGlobal.exampl
 
 Tool for creating projects, setting up Thunderstore metadata, and packaging mods.
 
-### Requirements
-
-- Python 3.7+
-- pipx (`pip install pipx` then `pipx ensurepath`)
-
 ### Installation
 
+**Windows/Other (pipx):**
 ```bash
-pipx install -e path/to/Broforce-Templates/Scripts
+pipx install path/to/Broforce-Templates/Scripts
 ```
 
-This installs `bt` and `broforce-tools` commands globally.
+**NixOS:**
+```nix
+# In flake.nix inputs
+broforce-tools.url = "github:alexneargarder/Broforce-Templates?dir=Scripts";
+
+# Enable in configuration
+programs.broforce-tools.enable = true;
+```
+
+Both methods install `bt` and `broforce-tools` commands globally.
 
 ### Running the Tool
 
@@ -55,7 +60,9 @@ Running without arguments opens interactive mode with a menu.
 
 ### Configuration
 
-Create `Scripts/broforce-tools.json` to configure repos and defaults:
+Create a config file to configure repos and defaults:
+- **Windows:** `Scripts/broforce-tools.json` (next to the script)
+- **Linux/NixOS:** `~/.config/broforce-tools/config.json`
 ```json
 {
   "repos": ["BroforceMods", "RocketLib", "Bro-Maker"],
@@ -93,7 +100,7 @@ Options:
 - `-a, --author` - Author name
 - `-o, --output-repo` - Target repository (defaults to current)
 
-Creates source files, `Releases/{ProjectName}/Changelog.md`, and copies build targets to the output repo.
+Creates source files, a Changelog.md in the release folder, and copies build targets to the output repo.
 
 ### init-thunderstore
 
@@ -107,11 +114,13 @@ bt init-thunderstore
 bt init-thunderstore "Project Name"
 ```
 
-Creates in `Releases/{ProjectName}/`:
+Creates in the project's release folder:
 - `manifest.json` - Package metadata with auto-detected dependencies
 - `README.md` - Template readme
 - `icon.png` - Placeholder icon (replace before publishing)
 - `Changelog.md` - If not already present
+
+Release folder structure is determined by project count: single-project repos use a flat `Release/` folder, multi-project repos use `Releases/{ProjectName}/`.
 
 Dependencies are detected by scanning the project's .csproj for RocketLib/BroMakerLib references.
 
@@ -157,17 +166,19 @@ Build in Visual Studio or with MSBuild.
 ```
 ProjectName/
 ├── ProjectName/
-│   ├── _ModContent/     # Mod assets, installed to game on build
+│   ├── _ModContent/     # Metadata folder (name auto-detected)
 │   │   ├── Info.json    # Mod metadata (mods)
 │   │   └── *.mod.json   # Bro metadata (bros)
 │   └── ProjectName.csproj
-└── Releases/
-    └── ProjectName/
+└── Release/             # Or Releases/ for multi-project repos
+    └── ProjectName/     # Subdirectory only in multi-project repos
         ├── manifest.json
         ├── README.md
         ├── icon.png
         └── Changelog.md
 ```
+
+The metadata folder can be named anything (`_ModContent`, `_Mod`, etc.) - the tool finds it by looking for `Info.json` or `*.mod.json`.
 
 ## Optional Setup
 

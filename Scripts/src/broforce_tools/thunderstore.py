@@ -206,7 +206,7 @@ def get_version_from_changelog(changelog_path: str) -> Optional[str]:
 
 
 def find_dll_in_modcontent(modcontent_path: str) -> Optional[str]:
-    """Find DLL file in _ModContent folder."""
+    """Find DLL file in mod metadata folder (_Mod or _ModContent)."""
     if not os.path.exists(modcontent_path):
         return None
 

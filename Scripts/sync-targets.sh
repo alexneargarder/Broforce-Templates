@@ -1,6 +1,6 @@
 #!/bin/bash
-# Syncs BroforceModBuild.targets and LocalBroforcePath.example.props from
-# Broforce-Templates (canonical source) to all other Broforce repos.
+# Syncs BroforceModBuild.targets from Broforce-Templates (canonical source)
+# to all repos in ~/repos that contain a copy.
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPOS_DIR="$(dirname "$(dirname "$SCRIPT_DIR")")"
@@ -8,33 +8,31 @@ REPOS_DIR="$(dirname "$(dirname "$SCRIPT_DIR")")"
 TARGETS_FILE="$SCRIPT_DIR/BroforceModBuild.targets"
 EXAMPLE_PROPS="$SCRIPT_DIR/LocalBroforcePath.example.props"
 
-REPOS=(
-    "BroforceMods"
-    "RocketLib"
-    "Bro-Maker"
-)
-
 echo "Syncing build files from Broforce-Templates..."
 echo ""
 
-for repo in "${REPOS[@]}"; do
-    REPO_PATH="$REPOS_DIR/$repo"
+# Find all BroforceModBuild.targets in repos dir, excluding the source
+find "$REPOS_DIR" -maxdepth 3 -name "BroforceModBuild.targets" -type f 2>/dev/null | while read -r target; do
+    # Skip the source file itself
+    [[ "$target" == "$TARGETS_FILE" ]] && continue
 
-    if [ ! -d "$REPO_PATH" ]; then
-        echo "  SKIP: $repo (not found)"
-        continue
-    fi
+    # Get repo name for display
+    repo_rel="${target#$REPOS_DIR/}"
 
-    # Copy targets file
-    if [ -d "$REPO_PATH/Scripts" ]; then
-        cp "$TARGETS_FILE" "$REPO_PATH/Scripts/"
-        echo "  $repo/Scripts/BroforceModBuild.targets"
-    fi
+    cp "$TARGETS_FILE" "$target"
+    echo "  $repo_rel"
+done
 
-    # Copy example props to repo root
-    cp "$EXAMPLE_PROPS" "$REPO_PATH/LocalBroforcePath.example.props"
-    echo "  $repo/LocalBroforcePath.example.props"
+# Also sync example props to repos that have it
+find "$REPOS_DIR" -maxdepth 2 -name "LocalBroforcePath.example.props" -type f 2>/dev/null | while read -r props; do
+    # Skip the source file itself
+    [[ "$props" == "$EXAMPLE_PROPS" ]] && continue
+
+    props_rel="${props#$REPOS_DIR/}"
+
+    cp "$EXAMPLE_PROPS" "$props"
+    echo "  $props_rel"
 done
 
 echo ""
-echo "Done. Verify with: md5sum */Scripts/BroforceModBuild.targets */LocalBroforcePath.example.props"
+echo "Done."

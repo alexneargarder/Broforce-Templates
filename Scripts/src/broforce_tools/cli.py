@@ -18,8 +18,10 @@ from .templates import (
     copyanything,
     detect_current_repo,
     detect_project_type,
+    find_mod_metadata_dir,
     find_projects,
     find_replace,
+    get_releases_path,
     get_repos_to_search,
     get_source_directory,
     rename_files,
@@ -175,21 +177,9 @@ def do_init_thunderstore(project_name: str, repos_parent: str) -> None:
         repo_path = os.path.join(repos_parent, repo)
         potential_project = os.path.join(repo_path, project_name)
 
-        if not os.path.exists(potential_project):
-            continue
-
-        potential_release_single = os.path.join(repo_path, 'Release')
-        if os.path.exists(potential_release_single) and os.path.isdir(potential_release_single):
-            if os.path.exists(potential_project) and os.path.isdir(potential_project):
-                project_path = potential_project
-                releases_path = potential_release_single
-                output_repo = repo
-                break
-
-        potential_releases_multi = os.path.join(repo_path, 'Releases', project_name)
-        if os.path.exists(potential_releases_multi):
+        if os.path.exists(potential_project) and os.path.isdir(potential_project):
             project_path = potential_project
-            releases_path = potential_releases_multi
+            releases_path = get_releases_path(repos_parent, repo, project_name, create=True)
             output_repo = repo
             break
 
@@ -202,7 +192,7 @@ def do_init_thunderstore(project_name: str, repos_parent: str) -> None:
 
     project_type = detect_project_type(project_path)
     if not project_type:
-        print(f"{Colors.FAIL}Error: Could not detect project type (no _ModContent or missing detection files){Colors.ENDC}")
+        print(f"{Colors.FAIL}Error: Could not detect project type (no metadata folder or missing Info.json/*.mod.json){Colors.ENDC}")
         raise typer.Exit(1)
 
     print(f"{Colors.BLUE}Detected project type: {project_type}{Colors.ENDC}")
@@ -306,8 +296,7 @@ def do_init_thunderstore(project_name: str, repos_parent: str) -> None:
         readme_content = readme_content.replace('PROJECT_NAME', project_name)
         readme_content = readme_content.replace('DESCRIPTION_PLACEHOLDER', description)
         readme_content = readme_content.replace('FEATURES_PLACEHOLDER', '*Describe your mod\'s features here*')
-        readme_content = readme_content.replace('AUTHOR_NAME', namespace)
-        readme_content = readme_content.replace('REPO_NAME', output_repo)
+        readme_content = readme_content.replace('WEBSITE_URL', website_url)
 
         with open(readme_dest, 'w', encoding='utf-8') as f:
             f.write(readme_content)
@@ -354,23 +343,12 @@ def do_package(project_name: str, repos_parent: str, version_override: Optional[
         repo_path = os.path.join(repos_parent, repo)
         potential_project = os.path.join(repo_path, project_name)
 
-        if not os.path.exists(potential_project):
-            continue
-
-        potential_release_single = os.path.join(repo_path, 'Release')
-        if os.path.exists(potential_release_single) and os.path.isdir(potential_release_single):
-            if os.path.exists(potential_project) and os.path.isdir(potential_project):
+        if os.path.exists(potential_project) and os.path.isdir(potential_project):
+            releases_path = get_releases_path(repos_parent, repo, project_name, create=False)
+            if releases_path:
                 project_path = potential_project
-                releases_path = potential_release_single
                 output_repo = repo
                 break
-
-        potential_releases_multi = os.path.join(repo_path, 'Releases', project_name)
-        if os.path.exists(potential_releases_multi):
-            project_path = potential_project
-            releases_path = potential_releases_multi
-            output_repo = repo
-            break
 
     if not project_path or not releases_path:
         print(f"{Colors.FAIL}Error: Could not find project '{project_name}'{Colors.ENDC}")
@@ -403,16 +381,15 @@ def do_package(project_name: str, repos_parent: str, version_override: Optional[
         print(f"{Colors.FAIL}Error: Could not detect project type{Colors.ENDC}")
         raise typer.Exit(1)
 
-    source_dir = get_source_directory(project_path)
-    if not source_dir:
-        print(f"{Colors.FAIL}Error: Could not find source directory with _ModContent{Colors.ENDC}")
+    metadata_dir = find_mod_metadata_dir(project_path)
+    if not metadata_dir:
+        print(f"{Colors.FAIL}Error: Could not find metadata folder{Colors.ENDC}")
         raise typer.Exit(1)
 
-    modcontent_path = os.path.join(source_dir, '_ModContent')
-    dll_path = find_dll_in_modcontent(modcontent_path)
+    dll_path = find_dll_in_modcontent(metadata_dir)
 
     if not dll_path:
-        print(f"{Colors.FAIL}Error: No DLL found in _ModContent{Colors.ENDC}")
+        print(f"{Colors.FAIL}Error: No DLL found in metadata folder{Colors.ENDC}")
         print(f"Build the project first")
         raise typer.Exit(1)
 
@@ -437,7 +414,7 @@ def do_package(project_name: str, repos_parent: str, version_override: Optional[
         except Exception:
             pass
 
-        info_version = get_version_from_info_json(modcontent_path, project_type)
+        info_version = get_version_from_info_json(metadata_dir, project_type)
 
         versions = {
             changelog_name: changelog_version,
@@ -593,7 +570,7 @@ def do_package(project_name: str, repos_parent: str, version_override: Optional[
     else:
         print(f"{Colors.BLUE}manifest.json already at version {version}{Colors.ENDC}")
 
-    updated, version_file_path = sync_version_file(modcontent_path, project_type, version)
+    updated, version_file_path = sync_version_file(metadata_dir, project_type, version)
     if updated:
         version_file_name = os.path.basename(version_file_path)
         print(f"{Colors.GREEN}Updated {version_file_name} version to {version}{Colors.ENDC}")
@@ -699,7 +676,7 @@ def do_package(project_name: str, repos_parent: str, version_override: Optional[
 
         os.makedirs(target_dir, exist_ok=True)
 
-        copyanything(modcontent_path, target_dir)
+        copyanything(metadata_dir, target_dir)
 
         with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zipf:
             for root, dirs, files in os.walk(temp_dir):

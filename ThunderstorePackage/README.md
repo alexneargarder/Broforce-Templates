@@ -16,4 +16,4 @@ FEATURES_PLACEHOLDER
 
 ## Source Code
 
-The source code for this mod can be found [here](https://github.com/AUTHOR_NAME/REPO_NAME).
+The source code for this mod can be found [here](WEBSITE_URL).
