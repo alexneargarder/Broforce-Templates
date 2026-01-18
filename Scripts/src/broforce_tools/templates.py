@@ -4,6 +4,7 @@ import fnmatch
 import os
 import re
 import shutil
+import stat
 import xml.etree.ElementTree as ET
 from pathlib import Path
 from typing import Optional
@@ -11,6 +12,19 @@ from typing import Optional
 from .colors import Colors
 from .config import get_configured_repos, get_ignored_projects
 from .paths import get_repos_parent, get_templates_dir, is_windows
+
+
+def _make_writable(path: str) -> None:
+    """Make all files and directories in a tree writable."""
+    # Make the root directory writable first
+    os.chmod(path, os.stat(path).st_mode | stat.S_IWUSR)
+    for root, dirs, files in os.walk(path):
+        for d in dirs:
+            dir_path = os.path.join(root, d)
+            os.chmod(dir_path, os.stat(dir_path).st_mode | stat.S_IWUSR)
+        for f in files:
+            file_path = os.path.join(root, f)
+            os.chmod(file_path, os.stat(file_path).st_mode | stat.S_IWUSR)
 
 
 def copyanything(src: str, dst: str) -> None:
@@ -24,9 +38,11 @@ def copyanything(src: str, dst: str) -> None:
 
     try:
         shutil.copytree(src, dst, ignore=ignore_patterns, dirs_exist_ok=True)
+        _make_writable(dst)
     except OSError as exc:
         if exc.errno in (errno.ENOTDIR, errno.EINVAL):
             shutil.copy(src, dst)
+            os.chmod(dst, os.stat(dst).st_mode | stat.S_IWUSR)
         else:
             raise
 
@@ -155,37 +171,65 @@ def get_bromaker_lib_path(repos_parent: str, broforce_path: str) -> Optional[str
     return None
 
 
-def get_source_directory(project_path: str) -> Optional[str]:
-    """Get the actual source directory containing _ModContent.
+def _has_mod_metadata(dir_path: str) -> bool:
+    """Check if a directory contains valid mod metadata (Info.json or *.mod.json)."""
+    try:
+        for f in os.listdir(dir_path):
+            if f == 'Info.json' or f.endswith('.mod.json'):
+                return True
+    except (OSError, FileNotFoundError):
+        pass
+    return False
 
-    Handles both flat and nested project structures:
-    - Flat: ProjectName/_ModContent/ → returns ProjectName/
-    - Nested: ProjectName/ProjectName/_ModContent/ → returns ProjectName/ProjectName/
+
+def find_mod_metadata_dir(project_path: str) -> Optional[str]:
+    """Find the mod metadata directory within a project.
+
+    Searches for any directory containing valid mod metadata
+    (Info.json for mods, *.mod.json for bros).
+
+    Returns the full path to the metadata directory, or None if not found.
     """
-    if os.path.exists(os.path.join(project_path, '_ModContent')):
-        return project_path
+    skip_dirs = {'bin', 'obj', '.vs', 'packages', 'Properties'}
 
-    project_name = os.path.basename(project_path)
-    nested_path = os.path.join(project_path, project_name)
-    if os.path.exists(os.path.join(nested_path, '_ModContent')):
-        return nested_path
+    for root, dirs, files in os.walk(project_path):
+        depth = root[len(project_path):].count(os.sep)
+        if depth > 3:
+            dirs.clear()
+            continue
 
+        dirs[:] = [d for d in dirs if d not in skip_dirs]
+
+        for d in dirs:
+            dir_path = os.path.join(root, d)
+            if _has_mod_metadata(dir_path):
+                return dir_path
+
+    return None
+
+
+def get_source_directory(project_path: str) -> Optional[str]:
+    """Get the source directory containing the mod metadata folder.
+
+    Returns the parent directory of the metadata folder (_Mod/_ModContent).
+    """
+    metadata_dir = find_mod_metadata_dir(project_path)
+    if metadata_dir:
+        return os.path.dirname(metadata_dir)
     return None
 
 
 def detect_project_type(project_path: str) -> Optional[str]:
     """Detect if project is a mod or bro."""
-    source_dir = get_source_directory(project_path)
-    if not source_dir:
+    metadata_dir = find_mod_metadata_dir(project_path)
+    if not metadata_dir:
         return None
 
-    mod_content_path = os.path.join(source_dir, '_ModContent')
-
-    if os.path.exists(os.path.join(mod_content_path, 'Info.json')):
+    if os.path.exists(os.path.join(metadata_dir, 'Info.json')):
         return 'mod'
 
     try:
-        for file in os.listdir(mod_content_path):
+        for file in os.listdir(metadata_dir):
             if file.endswith('.mod.json'):
                 return 'bro'
     except (OSError, FileNotFoundError):
@@ -340,19 +384,102 @@ def find_projects(
     return sorted(projects, key=lambda x: x[0])
 
 
-def _project_has_metadata(repos_parent: str, repo: str, project_name: str) -> bool:
-    """Check if a project has Thunderstore metadata (manifest.json)."""
+def count_projects_in_repo(repos_parent: str, repo: str) -> int:
+    """Count the number of projects in a single repo."""
+    skip_dirs = {'bin', 'obj', 'packages', 'Releases', 'Release', 'libs', '.vs', '.git'}
+    count = 0
     repo_path = os.path.join(repos_parent, repo)
 
-    multi_manifest = os.path.join(repo_path, 'Releases', project_name, 'manifest.json')
-    if os.path.exists(multi_manifest):
-        return True
+    if not os.path.exists(repo_path):
+        return 0
 
-    single_manifest = os.path.join(repo_path, 'Release', 'manifest.json')
-    if os.path.exists(single_manifest):
-        return True
+    try:
+        for item in os.listdir(repo_path):
+            if item.startswith('.') or item.startswith('_') or item in skip_dirs:
+                continue
 
-    return False
+            item_path = os.path.join(repo_path, item)
+            if not os.path.isdir(item_path):
+                continue
+
+            has_csproj = False
+            try:
+                for f in os.listdir(item_path):
+                    if f.endswith('.csproj'):
+                        has_csproj = True
+                        break
+                    subpath = os.path.join(item_path, f)
+                    if os.path.isdir(subpath):
+                        try:
+                            for sf in os.listdir(subpath):
+                                if sf.endswith('.csproj'):
+                                    has_csproj = True
+                                    break
+                        except (OSError, FileNotFoundError):
+                            pass
+                    if has_csproj:
+                        break
+            except (OSError, FileNotFoundError):
+                continue
+
+            if has_csproj:
+                count += 1
+    except (OSError, FileNotFoundError):
+        pass
+
+    return count
+
+
+def get_releases_path(repos_parent: str, repo: str, project_name: str, create: bool = False) -> Optional[str]:
+    """Get the releases path for a project.
+
+    Single vs multi-project is determined by project count, not folder name.
+    - Multi-project: <folder>/<project>/manifest.json
+    - Single-project: <folder>/manifest.json
+
+    The folder can be named Release or Releases - we use whichever exists.
+    """
+    repo_path = os.path.join(repos_parent, repo)
+    releases_dir = os.path.join(repo_path, 'Releases')
+    release_dir = os.path.join(repo_path, 'Release')
+
+    # Find existing release folder, or determine which to create
+    if os.path.exists(releases_dir) and os.path.isdir(releases_dir):
+        base_folder = releases_dir
+    elif os.path.exists(release_dir) and os.path.isdir(release_dir):
+        base_folder = release_dir
+    elif create:
+        # Neither exists - use convention: Releases for multi, Release for single
+        project_count = count_projects_in_repo(repos_parent, repo)
+        base_folder = releases_dir if project_count > 1 else release_dir
+    else:
+        # Not creating and no folder exists - check both patterns for existing metadata
+        base_folder = None
+
+    project_count = count_projects_in_repo(repos_parent, repo)
+    is_multi = project_count > 1
+
+    if not create:
+        # Looking for existing metadata - check both folder names
+        for folder in [releases_dir, release_dir]:
+            if is_multi:
+                path = os.path.join(folder, project_name)
+            else:
+                path = folder
+            if os.path.exists(os.path.join(path, 'manifest.json')):
+                return path
+        return None
+
+    # Creating new metadata
+    if is_multi:
+        return os.path.join(base_folder, project_name)
+    else:
+        return base_folder
+
+
+def _project_has_metadata(repos_parent: str, repo: str, project_name: str) -> bool:
+    """Check if a project has Thunderstore metadata (manifest.json)."""
+    return get_releases_path(repos_parent, repo, project_name, create=False) is not None
 
 
 def get_repos_to_search(repos_parent: str, use_all_repos: bool = False) -> tuple[Optional[list[str]], bool]:
