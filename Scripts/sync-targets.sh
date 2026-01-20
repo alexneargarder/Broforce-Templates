@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # Syncs BroforceModBuild.targets from Broforce-Templates (canonical source)
 # to all repos in ~/repos that contain a copy.
 
