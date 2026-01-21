@@ -182,27 +182,99 @@ def find_changelog(releases_path: str) -> Optional[str]:
 
 def get_version_from_changelog(changelog_path: str) -> Optional[str]:
     """Parse version from Changelog.md or CHANGELOG.md."""
+    version, _, _ = get_latest_version_entries(changelog_path)
+    return version
+
+
+def has_unreleased_version(changelog_path: str) -> tuple[bool, Optional[str]]:
+    """Check if changelog has (unreleased) marker on first version.
+
+    Returns:
+        Tuple of (is_unreleased, version_string or None)
+    """
+    version, is_unreleased, _ = get_latest_version_entries(changelog_path)
+    if is_unreleased:
+        return (True, version)
+    return (False, None)
+
+
+def get_unreleased_entries(changelog_path: str) -> tuple[Optional[str], list[str]]:
+    """Get the unreleased version and its entries.
+
+    Returns:
+        Tuple of (version or None, list of entry lines)
+    """
+    version, is_unreleased, entries = get_latest_version_entries(changelog_path)
+    if is_unreleased:
+        return (version, entries)
+    return (None, [])
+
+
+def get_latest_version_entries(changelog_path: str) -> tuple[Optional[str], bool, list[str]]:
+    """Get the latest version (released or unreleased) and its entries.
+
+    Returns:
+        Tuple of (version or None, is_unreleased, list of entry lines)
+    """
     if not os.path.exists(changelog_path):
-        return None
+        return (None, False, [])
 
     try:
         with open(changelog_path, 'r', encoding='utf-8') as f:
             content = f.read()
 
-        patterns = [
-            r'##\s*v?(\d+\.\d+\.\d+):?\s*\(unreleased\)',
-            r'##\s*v?(\d+\.\d+\.\d+):?',
-        ]
+        # Match first version header (with optional unreleased marker)
+        match = re.search(
+            r'##\s*v?(\d+\.\d+\.\d+)(.*?)\n(.*?)(?=\n##\s|$)',
+            content,
+            re.DOTALL
+        )
+        if not match:
+            return (None, False, [])
 
-        for pattern in patterns:
-            match = re.search(pattern, content)
-            if match:
-                return match.group(1)
+        version = match.group(1)
+        header_rest = match.group(2).lower()
+        is_unreleased = 'unreleased' in header_rest
+        entries_text = match.group(3).strip()
 
-        return None
-    except Exception as e:
-        print(f"{Colors.WARNING}Warning: Could not parse changelog: {e}{Colors.ENDC}")
-        return None
+        entries = []
+        for line in entries_text.split('\n'):
+            line = line.strip()
+            if line and line.startswith('-'):
+                entries.append(line)
+
+        return (version, is_unreleased, entries)
+    except Exception:
+        return (None, False, [])
+
+
+def add_changelog_entry(changelog_path: str, entry: str) -> bool:
+    """Add a bullet point entry to the unreleased section.
+
+    Inserts '- {entry}' after the '## vX.X.X (unreleased)' header.
+    Returns True on success.
+    """
+    is_unreleased, _ = has_unreleased_version(changelog_path)
+    if not is_unreleased:
+        return False
+
+    try:
+        with open(changelog_path, 'r', encoding='utf-8') as f:
+            lines = f.readlines()
+
+        for i, line in enumerate(lines):
+            if line.startswith('##') and 'unreleased' in line.lower():
+                lines.insert(i + 1, f"- {entry}\n")
+                break
+        else:
+            return False
+
+        with open(changelog_path, 'w', encoding='utf-8') as f:
+            f.writelines(lines)
+
+        return True
+    except Exception:
+        return False
 
 
 def find_dll_in_modcontent(modcontent_path: str) -> Optional[str]:

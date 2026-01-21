@@ -27,6 +27,7 @@ from .templates import (
     rename_files,
 )
 from .thunderstore import (
+    add_changelog_entry,
     clear_cache,
     compare_versions,
     detect_dependencies_from_csproj,
@@ -35,8 +36,11 @@ from .thunderstore import (
     get_cache_file,
     get_dependencies,
     get_dependency_versions,
+    get_latest_version_entries,
+    get_unreleased_entries,
     get_version_from_changelog,
     get_version_from_info_json,
+    has_unreleased_version,
     sanitize_package_name,
     sync_version_file,
     validate_package_name,
@@ -986,6 +990,7 @@ def main_callback(
                 "Create new mod / bro project",
                 "Setup Thunderstore metadata for an existing project",
                 "Package for releasing on Thunderstore",
+                "View/package unreleased projects",
                 "Show help"
             ]
         ).ask()
@@ -1014,6 +1019,8 @@ def main_callback(
                 if len(selected) > 1:
                     print(f"\n{Colors.HEADER}{'='*50}{Colors.ENDC}")
                 do_package(project_name, repos_parent, None)
+        elif choice == "View/package unreleased projects":
+            ctx.invoke(unreleased)
 
 
 @app.command()
@@ -1071,6 +1078,370 @@ def package(
             do_package(proj_name, repos_parent, version)
 
 
+@app.command()
+def unreleased(
+    all_repos: bool = typer.Option(False, "--all-repos", help="Show projects from all configured repos"),
+):
+    """List projects with unreleased changes and optionally package them."""
+    init_colors()
+    repos_parent = str(get_repos_parent())
+
+    repos, is_single_repo = get_repos_to_search(repos_parent, all_repos)
+    if not repos:
+        print(f"{Colors.FAIL}Error: No repos configured. Use --add-repo to add repos.{Colors.ENDC}")
+        raise typer.Exit(1)
+
+    projects = find_projects(repos_parent, repos, require_metadata=True)
+    if not projects:
+        print(f"{Colors.CYAN}No projects with Thunderstore metadata found.{Colors.ENDC}")
+        raise typer.Exit()
+
+    unreleased_by_repo: dict[str, list[tuple[str, str, list[str]]]] = {}
+
+    for project_name, repo in projects:
+        releases_path = get_releases_path(repos_parent, repo, project_name, create=False)
+        if not releases_path:
+            continue
+
+        changelog_path = find_changelog(releases_path)
+        if not changelog_path:
+            continue
+
+        is_unreleased, version = has_unreleased_version(changelog_path)
+        if is_unreleased:
+            _, entries = get_unreleased_entries(changelog_path)
+            if repo not in unreleased_by_repo:
+                unreleased_by_repo[repo] = []
+            unreleased_by_repo[repo].append((project_name, version, entries))
+
+    if not unreleased_by_repo:
+        print(f"{Colors.CYAN}No projects with unreleased changes found.{Colors.ENDC}")
+        raise typer.Exit()
+
+    def print_unreleased_list(show_details: bool):
+        print(f"{Colors.HEADER}Projects with unreleased changes:{Colors.ENDC}\n")
+        all_projects = []
+        for repo in sorted(unreleased_by_repo.keys()):
+            print(f"{Colors.BLUE}{repo}:{Colors.ENDC}")
+            for project_name, version, entries in sorted(unreleased_by_repo[repo]):
+                print(f"  {project_name} (v{version})")
+                all_projects.append((project_name, repo))
+                if show_details and entries:
+                    for entry in entries:
+                        print(f"    {Colors.CYAN}{entry}{Colors.ENDC}")
+            print()
+        return all_projects
+
+    show_details = False
+    all_unreleased = print_unreleased_list(show_details)
+    total_count = len(all_unreleased)
+
+    while True:
+        toggle_label = "Hide details" if show_details else "Show details"
+        choices = [
+            "Package selected projects",
+            f"Package all ({total_count} projects)",
+            toggle_label,
+            "Exit"
+        ]
+
+        selection = questionary.select("What would you like to do?", choices=choices).ask()
+
+        if not selection or selection == "Exit":
+            raise typer.Exit()
+
+        if selection in ("Show details", "Hide details"):
+            show_details = not show_details
+            print()
+            all_unreleased = print_unreleased_list(show_details)
+            continue
+
+        break
+
+    if selection.startswith("Package all"):
+        for project_name, repo in all_unreleased:
+            print(f"\n{Colors.HEADER}{'='*50}{Colors.ENDC}")
+            do_package(project_name, repos_parent, None)
+    else:
+        if is_single_repo:
+            project_choices = [name for name, repo in all_unreleased]
+        else:
+            project_choices = [f"{name} ({repo})" for name, repo in all_unreleased]
+
+        selected = questionary.checkbox(
+            "Select projects to package:",
+            choices=project_choices
+        ).ask()
+
+        if not selected:
+            print(f"{Colors.CYAN}No projects selected.{Colors.ENDC}")
+            raise typer.Exit()
+
+        for selection in selected:
+            if is_single_repo:
+                project_name = selection
+                repo = repos[0]
+            else:
+                project_name = selection.rsplit(' (', 1)[0]
+                for p_name, p_repo in all_unreleased:
+                    if p_name == project_name:
+                        repo = p_repo
+                        break
+
+            print(f"\n{Colors.HEADER}{'='*50}{Colors.ENDC}")
+            do_package(project_name, repos_parent, None)
+
+
+changelog_app = typer.Typer(help="Manage project changelogs")
+app.add_typer(changelog_app, name="changelog")
+
+
+@changelog_app.command("add")
+def changelog_add(
+    arg1: str = typer.Argument(
+        ...,
+        help="Project name (if 2 args) or message (if 1 arg)",
+        autocompletion=_complete_project_names_with_metadata
+    ),
+    arg2: Optional[str] = typer.Argument(None, help="Message (if 2 args)"),
+    all_repos: bool = typer.Option(False, "--all-repos", help="Show projects from all configured repos"),
+):
+    """Add an entry to a project's unreleased changelog section."""
+    init_colors()
+    repos_parent = str(get_repos_parent())
+
+    if arg2 is None:
+        message = arg1
+        repos, _ = get_repos_to_search(repos_parent, all_repos)
+        if not repos:
+            print(f"{Colors.FAIL}Error: No repos configured. Use --add-repo to add repos.{Colors.ENDC}")
+            raise typer.Exit(1)
+
+        projects = find_projects(repos_parent, repos, require_metadata=True)
+        if not projects:
+            print(f"{Colors.FAIL}Error: No projects with Thunderstore metadata found.{Colors.ENDC}")
+            raise typer.Exit(1)
+
+        if len(projects) == 1:
+            project_name, repo = projects[0]
+            print(f"{Colors.CYAN}Using project: {project_name}{Colors.ENDC}")
+        else:
+            choices = [f"{name} ({repo})" for name, repo in projects]
+            selection = questionary.select("Select project:", choices=choices).ask()
+            if not selection:
+                raise typer.Exit()
+            project_name = selection.rsplit(' (', 1)[0]
+            for p in projects:
+                if p[0] == project_name:
+                    repo = p[1]
+                    break
+    else:
+        project_name = arg1
+        message = arg2
+        repo = None
+        for r in os.listdir(repos_parent):
+            repo_path = os.path.join(repos_parent, r)
+            if os.path.isdir(repo_path):
+                potential_project = os.path.join(repo_path, project_name)
+                if os.path.exists(potential_project) and os.path.isdir(potential_project):
+                    repo = r
+                    break
+        if not repo:
+            print(f"{Colors.FAIL}Error: Could not find project '{project_name}'{Colors.ENDC}")
+            raise typer.Exit(1)
+
+    releases_path = get_releases_path(repos_parent, repo, project_name, create=False)
+    if not releases_path:
+        print(f"{Colors.FAIL}Error: Could not find releases path for '{project_name}'{Colors.ENDC}")
+        raise typer.Exit(1)
+
+    changelog_path = find_changelog(releases_path)
+    if not changelog_path:
+        print(f"{Colors.FAIL}Error: No changelog found for '{project_name}'{Colors.ENDC}")
+        raise typer.Exit(1)
+
+    is_unreleased, version = has_unreleased_version(changelog_path)
+    if not is_unreleased:
+        print(f"{Colors.FAIL}Error: No unreleased version found in changelog{Colors.ENDC}")
+        print(f"Add a version header like: ## v1.0.0 (unreleased)")
+        raise typer.Exit(1)
+
+    if add_changelog_entry(changelog_path, message):
+        print(f"{Colors.GREEN}Added to {project_name} v{version}:{Colors.ENDC}")
+        print(f"  - {message}")
+    else:
+        print(f"{Colors.FAIL}Error: Failed to add changelog entry{Colors.ENDC}")
+        raise typer.Exit(1)
+
+
+@changelog_app.command("edit")
+def changelog_edit(
+    project_name: Optional[str] = typer.Argument(
+        None,
+        help="Project name",
+        autocompletion=_complete_project_names_with_metadata
+    ),
+    all_repos: bool = typer.Option(False, "--all-repos", help="Show projects from all configured repos"),
+):
+    """Open a project's changelog in an editor."""
+    init_colors()
+    repos_parent = str(get_repos_parent())
+
+    if project_name:
+        repo = None
+        for r in os.listdir(repos_parent):
+            repo_path = os.path.join(repos_parent, r)
+            if os.path.isdir(repo_path):
+                potential_project = os.path.join(repo_path, project_name)
+                if os.path.exists(potential_project) and os.path.isdir(potential_project):
+                    repo = r
+                    break
+        if not repo:
+            print(f"{Colors.FAIL}Error: Could not find project '{project_name}'{Colors.ENDC}")
+            raise typer.Exit(1)
+    else:
+        repos, _ = get_repos_to_search(repos_parent, all_repos)
+        if not repos:
+            print(f"{Colors.FAIL}Error: No repos configured. Use --add-repo to add repos.{Colors.ENDC}")
+            raise typer.Exit(1)
+
+        projects = find_projects(repos_parent, repos, require_metadata=True)
+        if not projects:
+            print(f"{Colors.FAIL}Error: No projects with Thunderstore metadata found.{Colors.ENDC}")
+            raise typer.Exit(1)
+
+        if len(projects) == 1:
+            project_name, repo = projects[0]
+            print(f"{Colors.CYAN}Using project: {project_name}{Colors.ENDC}")
+        else:
+            choices = [f"{name} ({repo})" for name, repo in projects]
+            selection = questionary.select("Select project:", choices=choices).ask()
+            if not selection:
+                raise typer.Exit()
+            project_name = selection.rsplit(' (', 1)[0]
+            for p in projects:
+                if p[0] == project_name:
+                    repo = p[1]
+                    break
+
+    releases_path = get_releases_path(repos_parent, repo, project_name, create=False)
+    if not releases_path:
+        print(f"{Colors.FAIL}Error: Could not find releases path for '{project_name}'{Colors.ENDC}")
+        raise typer.Exit(1)
+
+    changelog_path = find_changelog(releases_path)
+    if not changelog_path:
+        print(f"{Colors.FAIL}Error: No changelog found for '{project_name}'{Colors.ENDC}")
+        raise typer.Exit(1)
+
+    editor = os.environ.get('EDITOR', os.environ.get('VISUAL', 'nano'))
+    print(f"{Colors.CYAN}Opening {changelog_path} in {editor}...{Colors.ENDC}")
+
+    import shlex
+    import subprocess
+    try:
+        editor_cmd = shlex.split(editor) + [changelog_path]
+        subprocess.run(editor_cmd, check=True)
+    except FileNotFoundError:
+        print(f"{Colors.FAIL}Error: Editor '{editor.split()[0]}' not found{Colors.ENDC}")
+        print(f"Set the EDITOR environment variable to your preferred editor")
+        raise typer.Exit(1)
+    except subprocess.CalledProcessError as e:
+        print(f"{Colors.FAIL}Error: Editor exited with code {e.returncode}{Colors.ENDC}")
+        raise typer.Exit(1)
+
+
+@changelog_app.command("show")
+def changelog_show(
+    project_name: Optional[str] = typer.Argument(
+        None,
+        help="Project name",
+        autocompletion=_complete_project_names_with_metadata
+    ),
+    all_repos: bool = typer.Option(False, "--all-repos", help="Show projects from all configured repos"),
+):
+    """Show the latest changelog entries for a project."""
+    init_colors()
+    repos_parent = str(get_repos_parent())
+
+    if project_name:
+        repo = None
+        for r in os.listdir(repos_parent):
+            repo_path = os.path.join(repos_parent, r)
+            if os.path.isdir(repo_path):
+                potential_project = os.path.join(repo_path, project_name)
+                if os.path.exists(potential_project) and os.path.isdir(potential_project):
+                    repo = r
+                    break
+        if not repo:
+            print(f"{Colors.FAIL}Error: Could not find project '{project_name}'{Colors.ENDC}")
+            raise typer.Exit(1)
+    else:
+        repos, _ = get_repos_to_search(repos_parent, all_repos)
+        if not repos:
+            print(f"{Colors.FAIL}Error: No repos configured. Use --add-repo to add repos.{Colors.ENDC}")
+            raise typer.Exit(1)
+
+        projects = find_projects(repos_parent, repos, require_metadata=True)
+        if not projects:
+            print(f"{Colors.FAIL}Error: No projects with Thunderstore metadata found.{Colors.ENDC}")
+            raise typer.Exit(1)
+
+        if len(projects) == 1:
+            project_name, repo = projects[0]
+            print(f"{Colors.CYAN}Using project: {project_name}{Colors.ENDC}")
+        else:
+            # Check which projects have unreleased versions
+            choices = []
+            project_map = {}  # Map display string to (name, repo)
+            unreleased_set = set()
+            for name, r in projects:
+                rel_path = get_releases_path(repos_parent, r, name, create=False)
+                is_unreleased = False
+                if rel_path:
+                    cl_path = find_changelog(rel_path)
+                    if cl_path:
+                        is_unreleased, _ = has_unreleased_version(cl_path)
+                if is_unreleased:
+                    display = f"{name} ({r}) *"
+                    unreleased_set.add(display)
+                else:
+                    display = f"{name} ({r})"
+                choices.append(display)
+                project_map[display] = (name, r)
+
+            # Sort with unreleased projects first
+            choices.sort(key=lambda x: (x not in unreleased_set, x))
+
+            selection = questionary.select("Select project (* = unreleased):", choices=choices).ask()
+            if not selection:
+                raise typer.Exit()
+            project_name, repo = project_map[selection]
+
+    releases_path = get_releases_path(repos_parent, repo, project_name, create=False)
+    if not releases_path:
+        print(f"{Colors.FAIL}Error: Could not find releases path for '{project_name}'{Colors.ENDC}")
+        raise typer.Exit(1)
+
+    changelog_path = find_changelog(releases_path)
+    if not changelog_path:
+        print(f"{Colors.FAIL}Error: No changelog found for '{project_name}'{Colors.ENDC}")
+        raise typer.Exit(1)
+
+    version, is_unreleased, entries = get_latest_version_entries(changelog_path)
+    if not version:
+        print(f"{Colors.CYAN}{project_name}: No versions found in changelog{Colors.ENDC}")
+        raise typer.Exit()
+
+    status = "(unreleased)" if is_unreleased else "(released)"
+    print(f"{Colors.HEADER}{project_name} - v{version} {status}:{Colors.ENDC}")
+    if entries:
+        for entry in entries:
+            print(f"  {entry}")
+    else:
+        print(f"  {Colors.CYAN}(no entries){Colors.ENDC}")
+
+
 def run():
     """Entry point for the CLI."""
-    app()
+    app(prog_name="bt")
