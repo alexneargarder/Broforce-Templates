@@ -12,7 +12,7 @@ _broforce_tools_completions()
     COMPREPLY=()
     cur="${COMP_WORDS[COMP_CWORD]}"
     prev="${COMP_WORDS[COMP_CWORD-1]}"
-    commands="create init-thunderstore package"
+    commands="create init-thunderstore package unreleased changelog"
 
     # Complete subcommands
     if [ $COMP_CWORD -eq 1 ]; then
@@ -28,7 +28,7 @@ _broforce_tools_completions()
                 COMPREPLY=($(compgen -W "mod bro" -- "$cur"))
             elif [[ "$prev" == "-o" ]] || [[ "$prev" == "--output-repo" ]]; then
                 local IFS=$'\n'
-                COMPREPLY=($(_get_projects repos))
+                COMPREPLY=($(compgen -W "$(_get_projects repos)" -- "$cur"))
             elif [[ "$cur" == -* ]]; then
                 COMPREPLY=($(compgen -W "-t --type -n --name -a --author -o --output-repo --help" -- "$cur"))
             fi
@@ -39,7 +39,7 @@ _broforce_tools_completions()
             else
                 compopt -o filenames 2>/dev/null
                 local IFS=$'\n'
-                COMPREPLY=($(_get_projects init))
+                COMPREPLY=($(compgen -W "$(_get_projects init)" -- "$cur"))
             fi
             ;;
         package)
@@ -50,7 +50,31 @@ _broforce_tools_completions()
             else
                 compopt -o filenames 2>/dev/null
                 local IFS=$'\n'
-                COMPREPLY=($(_get_projects package))
+                COMPREPLY=($(compgen -W "$(_get_projects package)" -- "$cur"))
+            fi
+            ;;
+        unreleased)
+            if [[ "$cur" == -* ]]; then
+                COMPREPLY=($(compgen -W "--all-repos --help" -- "$cur"))
+            fi
+            ;;
+        changelog)
+            # Handle changelog subcommands
+            if [ $COMP_CWORD -eq 2 ]; then
+                COMPREPLY=($(compgen -W "add show edit --help" -- "$cur"))
+            else
+                local changelog_subcommand="${COMP_WORDS[2]}"
+                case "$changelog_subcommand" in
+                    add|show|edit)
+                        if [[ "$cur" == -* ]]; then
+                            COMPREPLY=($(compgen -W "--all-repos --help" -- "$cur"))
+                        else
+                            compopt -o filenames 2>/dev/null
+                            local IFS=$'\n'
+                            COMPREPLY=($(compgen -W "$(_get_projects package)" -- "$cur"))
+                        fi
+                        ;;
+                esac
             fi
             ;;
     esac
