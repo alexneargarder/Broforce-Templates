@@ -5,6 +5,7 @@ import os
 import re
 import shutil
 import tempfile
+import time
 import zipfile
 from typing import Optional
 
@@ -27,6 +28,7 @@ from .templates import (
     rename_files,
 )
 from .thunderstore import (
+    CACHE_DURATION,
     add_changelog_entry,
     clear_cache,
     compare_versions,
@@ -1413,6 +1415,64 @@ def unreleased(
 
             print(f"\n{Colors.HEADER}{'='*50}{Colors.ENDC}")
             do_package(project_name, repos_parent, None)
+
+
+@app.command()
+def deps(
+    refresh: bool = typer.Option(False, "--refresh", "-r", help="Force re-fetch from Thunderstore API"),
+):
+    """Show dependency versions (cached from Thunderstore API)."""
+    init_colors()
+    cache_file = get_cache_file()
+
+    if refresh:
+        clear_cache()
+        print(f"{Colors.CYAN}Fetching latest versions from Thunderstore...{Colors.ENDC}")
+        versions = get_dependency_versions()
+        print(f"{Colors.GREEN}Cache refreshed.{Colors.ENDC}\n")
+    else:
+        versions = get_dependency_versions()
+
+    fallbacks = set()
+    if cache_file.exists():
+        try:
+            with open(cache_file, 'r', encoding='utf-8') as f:
+                cache_data = json.load(f)
+            fallbacks = set(cache_data.get('fallbacks', []))
+        except (json.JSONDecodeError, OSError):
+            pass
+
+    print(f"{Colors.HEADER}Dependency versions:{Colors.ENDC}")
+    for name, version in sorted(versions.items()):
+        if name in fallbacks:
+            print(f"  {name}: {version} {Colors.WARNING}(fallback - API unreachable){Colors.ENDC}")
+        else:
+            print(f"  {name}: {version}")
+
+    if cache_file.exists():
+        try:
+            with open(cache_file, 'r', encoding='utf-8') as f:
+                cache_data = json.load(f)
+            cache_time = cache_data.get('timestamp', 0)
+            age_seconds = time.time() - cache_time
+            if age_seconds < 60:
+                age_str = f"{int(age_seconds)}s"
+            elif age_seconds < 3600:
+                age_str = f"{int(age_seconds / 60)}m"
+            else:
+                age_str = f"{age_seconds / 3600:.1f}h"
+            expires_in = CACHE_DURATION - age_seconds
+            if expires_in > 0:
+                if expires_in < 3600:
+                    exp_str = f"{int(expires_in / 60)}m"
+                else:
+                    exp_str = f"{expires_in / 3600:.1f}h"
+                print(f"\n{Colors.CYAN}Cache age: {age_str} (expires in {exp_str}){Colors.ENDC}")
+            else:
+                print(f"\n{Colors.WARNING}Cache expired (age: {age_str}){Colors.ENDC}")
+        except (json.JSONDecodeError, OSError):
+            pass
+    print(f"{Colors.CYAN}Use --refresh to force re-fetch from Thunderstore API{Colors.ENDC}")
 
 
 changelog_app = typer.Typer(help="Manage project changelogs")

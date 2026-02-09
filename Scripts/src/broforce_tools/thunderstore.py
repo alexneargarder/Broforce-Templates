@@ -18,9 +18,9 @@ except ImportError:
     HAS_URLLIB = False
 
 FALLBACK_DEPENDENCY_VERSIONS = {
-    'UMM': '1.0.2',
-    'RocketLib': '2.4.0',
-    'BroMaker': '2.6.0',
+    'UMM': '1.1.0',
+    'RocketLib': '2.4.2',
+    'BroMaker': '2.6.1',
 }
 
 THUNDERSTORE_PACKAGES = {
@@ -40,7 +40,8 @@ def fetch_thunderstore_version(namespace: str, package_name: str) -> Optional[st
     url = f"https://thunderstore.io/api/experimental/package/{namespace}/{package_name}/"
 
     try:
-        with urllib.request.urlopen(url, timeout=5) as response:
+        req = urllib.request.Request(url, headers={'User-Agent': 'broforce-tools/1.0'})
+        with urllib.request.urlopen(req, timeout=5) as response:
             data = json.loads(response.read().decode('utf-8'))
             return data.get('latest', {}).get('version_number', None)
     except (urllib.error.URLError, urllib.error.HTTPError, json.JSONDecodeError, TimeoutError):
@@ -65,18 +66,21 @@ def get_dependency_versions() -> dict[str, str]:
             pass
 
     versions = {}
+    fallbacks = []
     for dep_name, (namespace, package) in THUNDERSTORE_PACKAGES.items():
         version = fetch_thunderstore_version(namespace, package)
         if version:
             versions[dep_name] = version
         else:
             versions[dep_name] = FALLBACK_DEPENDENCY_VERSIONS[dep_name]
+            fallbacks.append(dep_name)
 
     try:
         ensure_dir(get_cache_dir())
         cache_data = {
             'timestamp': time.time(),
-            'versions': versions
+            'versions': versions,
+            'fallbacks': fallbacks,
         }
         with open(cache_file, 'w', encoding='utf-8') as f:
             json.dump(cache_data, f, indent=2)
