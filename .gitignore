@@ -452,3 +452,6 @@ Scripts/broforce-tools.json
 .devenv.flake.nix
 .direnv/
 Scripts/result
+
+# Test fixtures for broforce-tools
+Scripts/test-fixtures/

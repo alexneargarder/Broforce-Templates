@@ -20,9 +20,14 @@ def is_linux() -> bool:
 def get_config_dir() -> Path:
     """Get config directory.
 
+    Checks BROFORCE_CONFIG_DIR env var first (for testing).
     Linux: XDG_CONFIG_HOME/broforce-tools or ~/.config/broforce-tools
     Windows: Same directory as the script (existing behavior)
     """
+    env_path = os.environ.get('BROFORCE_CONFIG_DIR')
+    if env_path:
+        return Path(env_path).expanduser()
+
     if is_windows():
         return _get_script_dir()
     else:

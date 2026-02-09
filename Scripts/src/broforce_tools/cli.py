@@ -103,6 +103,16 @@ def _complete_none(incomplete: str) -> list[str]:
     return []
 
 
+def check_missing_required(missing: list[tuple[str, str]]) -> None:
+    """Error if any required values are missing in non-interactive mode."""
+    if missing:
+        print(f"{Colors.FAIL}Error: Non-interactive mode requires the following:{Colors.ENDC}")
+        for flag, desc in missing:
+            print(f"  {flag}: {desc}")
+        print(f"\nRun without --non-interactive for interactive prompts, or provide the missing options.")
+        raise typer.Exit(1)
+
+
 def select_projects_interactive(
     repos_parent: str,
     mode: str,
@@ -165,7 +175,15 @@ def select_projects_interactive(
         return []
 
 
-def do_init_thunderstore(project_name: str, repos_parent: str) -> None:
+def do_init_thunderstore(
+    project_name: str,
+    repos_parent: str,
+    namespace: Optional[str] = None,
+    description: Optional[str] = None,
+    website_url: Optional[str] = None,
+    package_name_override: Optional[str] = None,
+    non_interactive: bool = False,
+) -> None:
     """Initialize Thunderstore metadata for an existing project."""
     print(f"{Colors.HEADER}Initializing Thunderstore metadata for '{project_name}'{Colors.ENDC}")
 
@@ -201,62 +219,100 @@ def do_init_thunderstore(project_name: str, repos_parent: str) -> None:
 
     print(f"{Colors.BLUE}Detected project type: {project_type}{Colors.ENDC}")
 
-    print(f"\n{Colors.HEADER}Enter Thunderstore package information:{Colors.ENDC}")
-
     defaults = get_defaults()
     default_namespace = defaults.get('namespace', '')
     default_website = defaults.get('website_url', '')
 
-    if default_namespace:
-        namespace = questionary.text(
-            f"Namespace/Author [{default_namespace}]:",
-            default=default_namespace,
+    # Collect missing required values for non-interactive mode
+    missing: list[tuple[str, str]] = []
+
+    # Namespace
+    if namespace is not None:
+        final_namespace = namespace
+    elif non_interactive:
+        if default_namespace:
+            final_namespace = default_namespace
+        else:
+            missing.append(("--namespace / -n", "Thunderstore namespace/author"))
+            final_namespace = ""
+    else:
+        print(f"\n{Colors.HEADER}Enter Thunderstore package information:{Colors.ENDC}")
+        if default_namespace:
+            final_namespace = questionary.text(
+                f"Namespace/Author [{default_namespace}]:",
+                default=default_namespace,
+                validate=lambda text: validate_package_name(text)[0] if text else True
+            ).ask()
+            if final_namespace is None:
+                raise typer.Exit()
+            if not final_namespace:
+                final_namespace = default_namespace
+        else:
+            final_namespace = questionary.text(
+                "Namespace/Author (e.g., AlexNeargarder):",
+                validate=lambda text: validate_package_name(text)[0]
+            ).ask()
+            if final_namespace is None or not final_namespace:
+                raise typer.Exit()
+
+    # Package name
+    suggested_name = sanitize_package_name(project_name)
+    if package_name_override is not None:
+        final_package_name = package_name_override
+    elif non_interactive:
+        final_package_name = suggested_name
+    else:
+        final_package_name = questionary.text(
+            f"Package name [{suggested_name}]:",
+            default=suggested_name,
             validate=lambda text: validate_package_name(text)[0] if text else True
         ).ask()
-        if namespace is None:
+        if final_package_name is None:
             raise typer.Exit()
-        if not namespace:
-            namespace = default_namespace
+        if not final_package_name:
+            final_package_name = suggested_name
+
+    # Description
+    if description is not None:
+        final_description = description
+    elif non_interactive:
+        missing.append(("--description / -d", "Package description (max 250 chars)"))
+        final_description = ""
     else:
-        namespace = questionary.text(
-            "Namespace/Author (e.g., AlexNeargarder):",
-            validate=lambda text: validate_package_name(text)[0]
-        ).ask()
-        if namespace is None or not namespace:
+        final_description = questionary.text("Description (max 250 chars):").ask()
+        if final_description is None:
             raise typer.Exit()
 
-    suggested_name = sanitize_package_name(project_name)
-    package_name = questionary.text(
-        f"Package name [{suggested_name}]:",
-        default=suggested_name,
-        validate=lambda text: validate_package_name(text)[0] if text else True
-    ).ask()
-    if package_name is None:
-        raise typer.Exit()
-    if not package_name:
-        package_name = suggested_name
-
-    description = questionary.text("Description (max 250 chars):").ask()
-    if description is None:
-        raise typer.Exit()
-    if len(description) > 250:
+    if len(final_description) > 250:
         print(f"{Colors.WARNING}Warning: Description truncated to 250 characters{Colors.ENDC}")
-        description = description[:250]
+        final_description = final_description[:250]
 
-    if default_website:
-        website_url = questionary.text(
-            f"Website/GitHub URL [{default_website}]:",
-            default=default_website
-        ).ask()
-        if website_url is None:
-            raise typer.Exit()
-        if not website_url:
-            website_url = default_website
+    # Website URL
+    if website_url is not None:
+        final_website_url = website_url
+    elif non_interactive:
+        final_website_url = default_website
     else:
-        website_url = questionary.text("Website/GitHub URL:").ask()
-        if website_url is None:
-            raise typer.Exit()
-        website_url = website_url or ""
+        if default_website:
+            final_website_url = questionary.text(
+                f"Website/GitHub URL [{default_website}]:",
+                default=default_website
+            ).ask()
+            if final_website_url is None:
+                raise typer.Exit()
+            if not final_website_url:
+                final_website_url = default_website
+        else:
+            final_website_url = questionary.text("Website/GitHub URL:").ask()
+            if final_website_url is None:
+                raise typer.Exit()
+            final_website_url = final_website_url or ""
+
+    # Check for missing required values in non-interactive mode
+    check_missing_required(missing)
+
+    # Create releases directory if it doesn't exist
+    os.makedirs(releases_path, exist_ok=True)
 
     changelog_path = find_changelog(releases_path)
     if not changelog_path:
@@ -275,11 +331,11 @@ def do_init_thunderstore(project_name: str, repos_parent: str) -> None:
 
     manifest_path = os.path.join(releases_path, 'manifest.json')
     manifest_data = {
-        "name": package_name,
-        "author": namespace,
+        "name": final_package_name,
+        "author": final_namespace,
         "version_number": "1.0.0",
-        "website_url": website_url,
-        "description": description,
+        "website_url": final_website_url,
+        "description": final_description,
         "dependencies": detected_deps
     }
 
@@ -298,9 +354,9 @@ def do_init_thunderstore(project_name: str, repos_parent: str) -> None:
             readme_content = f.read()
 
         readme_content = readme_content.replace('PROJECT_NAME', project_name)
-        readme_content = readme_content.replace('DESCRIPTION_PLACEHOLDER', description)
+        readme_content = readme_content.replace('DESCRIPTION_PLACEHOLDER', final_description)
         readme_content = readme_content.replace('FEATURES_PLACEHOLDER', '*Describe your mod\'s features here*')
-        readme_content = readme_content.replace('WEBSITE_URL', website_url)
+        readme_content = readme_content.replace('WEBSITE_URL', final_website_url)
 
         with open(readme_dest, 'w', encoding='utf-8') as f:
             f.write(readme_content)
@@ -334,7 +390,16 @@ def do_init_thunderstore(project_name: str, repos_parent: str) -> None:
     print(f"  4. Run: bt package \"{project_name}\"")
 
 
-def do_package(project_name: str, repos_parent: str, version_override: Optional[str] = None) -> None:
+def do_package(
+    project_name: str,
+    repos_parent: str,
+    version_override: Optional[str] = None,
+    non_interactive: bool = False,
+    allow_outdated_changelog: bool = False,
+    overwrite: bool = False,
+    update_deps: Optional[bool] = None,
+    add_missing_deps: Optional[bool] = None,
+) -> None:
     """Create Thunderstore package for an existing project."""
     template_dir = get_templates_dir()
 
@@ -450,15 +515,20 @@ def do_package(project_name: str, repos_parent: str, version_override: Optional[
             print(f"{Colors.CYAN}Highest version found: {version} (from {highest_source}){Colors.ENDC}")
             print(f"\n{Colors.WARNING}Did you forget to update {changelog_name}?{Colors.ENDC}")
 
-            continue_package = questionary.confirm(
-                f"Continue packaging with version {version}?",
-                default=False
-            ).ask()
+            if non_interactive:
+                if not allow_outdated_changelog:
+                    print(f"\n{Colors.FAIL}Error: Changelog is outdated. Use --allow-outdated-changelog to package anyway.{Colors.ENDC}")
+                    raise typer.Exit(1)
+            else:
+                continue_package = questionary.confirm(
+                    f"Continue packaging with version {version}?",
+                    default=False
+                ).ask()
 
-            if continue_package is None or not continue_package:
-                print(f"\n{Colors.CYAN}Packaging cancelled.{Colors.ENDC}")
-                print(f"Update {changelog_name} to version {version} before packaging.")
-                raise typer.Exit()
+                if continue_package is None or not continue_package:
+                    print(f"\n{Colors.CYAN}Packaging cancelled.{Colors.ENDC}")
+                    print(f"Update {changelog_name} to version {version} before packaging.")
+                    raise typer.Exit()
 
     with open(manifest_path, 'r', encoding='utf-8') as f:
         manifest_data = json.load(f)
@@ -469,6 +539,10 @@ def do_package(project_name: str, repos_parent: str, version_override: Optional[
     if namespace == 'Unknown' or not namespace:
         print(f"\n{Colors.WARNING}Warning: No author/namespace set in manifest.json{Colors.ENDC}")
         print(f"{Colors.CYAN}The author field is used for the package filename and Thunderstore namespace.{Colors.ENDC}")
+
+        if non_interactive:
+            print(f"\n{Colors.FAIL}Error: No author set in manifest.json. Edit manifest.json to add an author.{Colors.ENDC}")
+            raise typer.Exit(1)
 
         set_author = questionary.confirm(
             "Set author name now?",
@@ -518,14 +592,20 @@ def do_package(project_name: str, repos_parent: str, version_override: Optional[
         for old_dep, new_dep in outdated_deps:
             print(f"  {old_dep} → {new_dep}")
 
-        update = questionary.confirm(
-            "Update dependencies to latest versions?",
-            default=True
-        ).ask()
+        if non_interactive:
+            # Default to True in non-interactive mode unless explicitly set to False
+            should_update = update_deps if update_deps is not None else True
+        else:
+            update = questionary.confirm(
+                "Update dependencies to latest versions?",
+                default=True
+            ).ask()
 
-        if update is None:
-            raise typer.Exit()
-        elif update:
+            if update is None:
+                raise typer.Exit()
+            should_update = update
+
+        if should_update:
             manifest_data['dependencies'] = updated_deps
             print(f"{Colors.GREEN}Dependencies updated{Colors.ENDC}")
         else:
@@ -546,14 +626,20 @@ def do_package(project_name: str, repos_parent: str, version_override: Optional[
         for dep in missing_deps:
             print(f"  + {dep}")
 
-        add_deps = questionary.confirm(
-            "Add missing dependencies to manifest?",
-            default=True
-        ).ask()
+        if non_interactive:
+            # Default to True in non-interactive mode unless explicitly set to False
+            should_add = add_missing_deps if add_missing_deps is not None else True
+        else:
+            add_deps_prompt = questionary.confirm(
+                "Add missing dependencies to manifest?",
+                default=True
+            ).ask()
 
-        if add_deps is None:
-            raise typer.Exit()
-        elif add_deps:
+            if add_deps_prompt is None:
+                raise typer.Exit()
+            should_add = add_deps_prompt
+
+        if should_add:
             if updated_deps:
                 updated_deps.extend(missing_deps)
             else:
@@ -599,14 +685,20 @@ def do_package(project_name: str, repos_parent: str, version_override: Optional[
                     print(f"\n{Colors.WARNING}Outdated BroMakerVersion in {os.path.basename(version_file_path)}:{Colors.ENDC}")
                     print(f"  {current_bromaker_version} → {latest_bromaker_version}")
 
-                    update_bromaker = questionary.confirm(
-                        "Update BroMakerVersion to latest?",
-                        default=True
-                    ).ask()
+                    if non_interactive:
+                        # Auto-update in non-interactive mode
+                        should_update_bromaker = True
+                    else:
+                        update_bromaker = questionary.confirm(
+                            "Update BroMakerVersion to latest?",
+                            default=True
+                        ).ask()
 
-                    if update_bromaker is None:
-                        raise typer.Exit()
-                    elif update_bromaker:
+                        if update_bromaker is None:
+                            raise typer.Exit()
+                        should_update_bromaker = update_bromaker
+
+                    if should_update_bromaker:
                         mod_json_data['BroMakerVersion'] = latest_bromaker_version
                         with open(version_file_path, 'w', encoding='utf-8') as f:
                             json.dump(mod_json_data, f, indent=2)
@@ -620,14 +712,22 @@ def do_package(project_name: str, repos_parent: str, version_override: Optional[
     if os.path.exists(zip_path):
         print(f"\n{Colors.WARNING}Package {zip_filename} already exists{Colors.ENDC}")
 
-        overwrite = questionary.confirm(
-            "Overwrite existing package?",
-            default=True
-        ).ask()
+        if non_interactive:
+            if not overwrite:
+                print(f"\n{Colors.FAIL}Error: Package already exists. Use --overwrite to replace it.{Colors.ENDC}")
+                raise typer.Exit(1)
+            should_overwrite = True
+        else:
+            overwrite_prompt = questionary.confirm(
+                "Overwrite existing package?",
+                default=True
+            ).ask()
 
-        if overwrite is None:
-            raise typer.Exit()
-        elif not overwrite:
+            if overwrite_prompt is None:
+                raise typer.Exit()
+            should_overwrite = overwrite_prompt
+
+        if not should_overwrite:
             print(f"\n{Colors.CYAN}Packaging cancelled.{Colors.ENDC}")
             print(f"To create a new package, update the version in {changelog_name}")
             raise typer.Exit()
@@ -702,55 +802,71 @@ def do_create_project(
     template_type: Optional[str],
     name: Optional[str],
     author: Optional[str],
-    output_repo: Optional[str]
+    output_repo: Optional[str],
+    non_interactive: bool = False,
+    no_thunderstore: bool = False,
 ) -> None:
     """Create a new mod or bro project from templates."""
     template_dir = get_templates_dir()
     repos_parent = str(get_repos_parent())
     scripts_dir = os.path.join(template_dir, 'Scripts')
 
+    # Collect missing required values for non-interactive mode
+    missing: list[tuple[str, str]] = []
+
     if output_repo:
         output_repo_name = output_repo
         print(f"{Colors.BLUE}Using output repository: {output_repo_name}{Colors.ENDC}")
     else:
         current_repo = detect_current_repo(repos_parent)
-        configured_repos = get_configured_repos()
 
-        choices = []
-
-        if current_repo:
-            choices.append(f"{current_repo} (current directory)")
-
-        for repo in configured_repos:
-            if repo != current_repo:
-                choices.append(repo)
-
-        choices.append("Enter another repository name...")
-
-        selection = questionary.select(
-            "Select output repository:",
-            choices=choices
-        ).ask()
-
-        if not selection:
-            raise typer.Exit()
-
-        if selection == "Enter another repository name...":
-            output_repo_name = questionary.text(
-                "Enter repository name:"
-            ).ask()
-            if not output_repo_name:
-                print(f"{Colors.FAIL}Error: Repository name cannot be empty.{Colors.ENDC}")
-                raise typer.Exit(1)
-        elif selection.endswith(" (current directory)"):
-            output_repo_name = current_repo
+        if non_interactive:
+            if current_repo:
+                output_repo_name = current_repo
+                print(f"{Colors.BLUE}Using output repository: {output_repo_name}{Colors.ENDC}")
+            else:
+                missing.append(("--output-repo / -o", "Target repository"))
+                output_repo_name = ""
         else:
-            output_repo_name = selection
+            configured_repos = get_configured_repos()
 
-        print(f"{Colors.BLUE}Using output repository: {output_repo_name}{Colors.ENDC}")
+            choices = []
+
+            if current_repo:
+                choices.append(f"{current_repo} (current directory)")
+
+            for repo in configured_repos:
+                if repo != current_repo:
+                    choices.append(repo)
+
+            choices.append("Enter another repository name...")
+
+            selection = questionary.select(
+                "Select output repository:",
+                choices=choices
+            ).ask()
+
+            if not selection:
+                raise typer.Exit()
+
+            if selection == "Enter another repository name...":
+                output_repo_name = questionary.text(
+                    "Enter repository name:"
+                ).ask()
+                if not output_repo_name:
+                    print(f"{Colors.FAIL}Error: Repository name cannot be empty.{Colors.ENDC}")
+                    raise typer.Exit(1)
+            elif selection.endswith(" (current directory)"):
+                output_repo_name = current_repo
+            else:
+                output_repo_name = selection
+
+            print(f"{Colors.BLUE}Using output repository: {output_repo_name}{Colors.ENDC}")
 
     if template_type:
         pass
+    elif non_interactive:
+        missing.append(("--type / -t", "Project type (mod or bro)"))
     else:
         choice = questionary.select(
             "What would you like to create?",
@@ -764,11 +880,16 @@ def do_create_project(
 
     if template_type == "mod":
         source_template_name = "Mod Template"
-    else:
+    elif template_type == "bro":
         source_template_name = "Bro Template"
+    else:
+        source_template_name = ""
 
     if name:
         newName = name
+    elif non_interactive:
+        missing.append(("--name / -n", "Project name"))
+        newName = ""
     else:
         newName = questionary.text(f"Enter {template_type} name:").ask()
         if not newName:
@@ -780,11 +901,17 @@ def do_create_project(
 
     if author:
         authorName = author
+    elif non_interactive:
+        missing.append(("--author / -a", "Author name"))
+        authorName = ""
     else:
         authorName = questionary.text("Enter author name (e.g., YourName):").ask()
         if not authorName:
             print(f"{Colors.FAIL}Error: Author name cannot be empty.{Colors.ENDC}")
             raise typer.Exit(1)
+
+    # Check for missing required values in non-interactive mode
+    check_missing_required(missing)
 
     templatePath = os.path.join(template_dir, source_template_name)
     output_repo_path = os.path.join(repos_parent, output_repo_name)
@@ -906,22 +1033,32 @@ def do_create_project(
         print(f"{Colors.CYAN}Source files:{Colors.ENDC} {newRepoPath}")
         print(f"{Colors.CYAN}Releases folder:{Colors.ENDC} {newReleaseFolder}")
 
-        setup_thunderstore = questionary.confirm(
-            "Set up Thunderstore metadata now?",
-            default=True
-        ).ask()
-
-        if setup_thunderstore is None:
-            raise typer.Exit()
-        elif setup_thunderstore:
-            print()
-            do_init_thunderstore(newName, repos_parent)
-        else:
+        if no_thunderstore:
             print(f"\n{Colors.CYAN}Next steps:{Colors.ENDC}")
             print(f"  1. Open the project in Visual Studio")
             print(f"  2. Build the project (builds to game automatically)")
             print(f"  3. Launch Broforce to test your {template_type}")
             print(f"  4. Run 'bt init-thunderstore' when ready to publish")
+        elif non_interactive:
+            # In non-interactive mode without --no-thunderstore, skip init (can't prompt for metadata)
+            print(f"\n{Colors.CYAN}Note: Run 'bt init-thunderstore' to set up Thunderstore metadata.{Colors.ENDC}")
+        else:
+            setup_thunderstore = questionary.confirm(
+                "Set up Thunderstore metadata now?",
+                default=True
+            ).ask()
+
+            if setup_thunderstore is None:
+                raise typer.Exit()
+            elif setup_thunderstore:
+                print()
+                do_init_thunderstore(newName, repos_parent)
+            else:
+                print(f"\n{Colors.CYAN}Next steps:{Colors.ENDC}")
+                print(f"  1. Open the project in Visual Studio")
+                print(f"  2. Build the project (builds to game automatically)")
+                print(f"  3. Launch Broforce to test your {template_type}")
+                print(f"  4. Run 'bt init-thunderstore' when ready to publish")
 
     except Exception as e:
         print(f"{Colors.FAIL}Error: Failed during file processing: {e}{Colors.ENDC}")
@@ -1029,31 +1166,57 @@ def create(
     name: Optional[str] = typer.Option(None, "-n", "--name", help="Project name", autocompletion=_complete_none),
     author: Optional[str] = typer.Option(None, "-a", "--author", help="Author name", autocompletion=_complete_none),
     output_repo: Optional[str] = typer.Option(None, "-o", "--output-repo", help="Target repository", autocompletion=_complete_repos),
+    non_interactive: bool = typer.Option(False, "-y", "--non-interactive", help="Fail instead of prompting for input"),
+    no_thunderstore: bool = typer.Option(False, "--no-thunderstore", help="Skip Thunderstore metadata setup"),
 ):
     """Create a new mod or bro project from templates."""
     init_colors()
-    do_create_project(type, name, author, output_repo)
+    do_create_project(type, name, author, output_repo, non_interactive, no_thunderstore)
 
 
 @app.command("init-thunderstore")
 def init_thunderstore_cmd(
     project_name: Optional[str] = typer.Argument(None, help="Project name (optional)", autocompletion=_complete_project_names_without_metadata),
     all_repos: bool = typer.Option(False, "--all-repos", help="Show projects from all configured repos"),
+    non_interactive: bool = typer.Option(False, "-y", "--non-interactive", help="Fail instead of prompting for input"),
+    namespace: Optional[str] = typer.Option(None, "-n", "--namespace", help="Thunderstore namespace/author", autocompletion=_complete_none),
+    description: Optional[str] = typer.Option(None, "-d", "--description", help="Package description (max 250 chars)", autocompletion=_complete_none),
+    website_url: Optional[str] = typer.Option(None, "-w", "--website-url", help="Website/GitHub URL", autocompletion=_complete_none),
+    package_name: Optional[str] = typer.Option(None, "-p", "--package-name", help="Override package name", autocompletion=_complete_none),
 ):
     """Initialize Thunderstore metadata for an existing project."""
     init_colors()
     repos_parent = str(get_repos_parent())
 
+    # In non-interactive mode, project_name is required
+    if non_interactive and not project_name:
+        print(f"{Colors.FAIL}Error: Non-interactive mode requires a project name argument.{Colors.ENDC}")
+        raise typer.Exit(1)
+
     if project_name:
-        do_init_thunderstore(project_name, repos_parent)
+        do_init_thunderstore(
+            project_name, repos_parent,
+            namespace=namespace,
+            description=description,
+            website_url=website_url,
+            package_name_override=package_name,
+            non_interactive=non_interactive,
+        )
     else:
         selected = select_projects_interactive(repos_parent, 'init', use_all_repos=all_repos)
         if not selected:
             raise typer.Exit()
-        for proj_name, repo in selected:
+        for proj_name, _ in selected:
             if len(selected) > 1:
                 print(f"\n{Colors.HEADER}{'='*50}{Colors.ENDC}")
-            do_init_thunderstore(proj_name, repos_parent)
+            do_init_thunderstore(
+                proj_name, repos_parent,
+                namespace=namespace,
+                description=description,
+                website_url=website_url,
+                package_name_override=package_name,
+                non_interactive=non_interactive,
+            )
 
 
 @app.command()
@@ -1061,26 +1224,53 @@ def package(
     project_name: Optional[str] = typer.Argument(None, help="Project name (optional)", autocompletion=_complete_project_names_with_metadata),
     version: Optional[str] = typer.Option(None, "--version", help="Override version", autocompletion=_complete_none),
     all_repos: bool = typer.Option(False, "--all-repos", help="Show projects from all configured repos"),
+    non_interactive: bool = typer.Option(False, "-y", "--non-interactive", help="Fail instead of prompting for input"),
+    allow_outdated_changelog: bool = typer.Option(False, "--allow-outdated-changelog", help="Package even if changelog version is behind"),
+    overwrite: bool = typer.Option(False, "--overwrite", help="Overwrite existing package ZIP"),
+    update_deps: Optional[bool] = typer.Option(None, "--update-deps/--no-update-deps", help="Update outdated dependencies (default: yes in non-interactive)"),
+    add_missing_deps: Optional[bool] = typer.Option(None, "--add-missing-deps/--no-add-missing-deps", help="Add missing dependencies (default: yes in non-interactive)"),
 ):
     """Create a Thunderstore-ready ZIP package."""
     init_colors()
     repos_parent = str(get_repos_parent())
 
+    # In non-interactive mode, project_name is required
+    if non_interactive and not project_name:
+        print(f"{Colors.FAIL}Error: Non-interactive mode requires a project name argument.{Colors.ENDC}")
+        raise typer.Exit(1)
+
     if project_name:
-        do_package(project_name, repos_parent, version)
+        do_package(
+            project_name, repos_parent, version,
+            non_interactive=non_interactive,
+            allow_outdated_changelog=allow_outdated_changelog,
+            overwrite=overwrite,
+            update_deps=update_deps,
+            add_missing_deps=add_missing_deps,
+        )
     else:
         selected = select_projects_interactive(repos_parent, 'package', use_all_repos=all_repos)
         if not selected:
             raise typer.Exit()
-        for proj_name, repo in selected:
+        for proj_name, _ in selected:
             if len(selected) > 1:
                 print(f"\n{Colors.HEADER}{'='*50}{Colors.ENDC}")
-            do_package(proj_name, repos_parent, version)
+            do_package(
+                proj_name, repos_parent, version,
+                non_interactive=non_interactive,
+                allow_outdated_changelog=allow_outdated_changelog,
+                overwrite=overwrite,
+                update_deps=update_deps,
+                add_missing_deps=add_missing_deps,
+            )
 
 
 @app.command()
 def unreleased(
     all_repos: bool = typer.Option(False, "--all-repos", help="Show projects from all configured repos"),
+    non_interactive: bool = typer.Option(False, "-y", "--non-interactive", help="Fail instead of prompting for input"),
+    package_all: bool = typer.Option(False, "--package-all", help="Package all unreleased projects"),
+    package: Optional[list[str]] = typer.Option(None, "--package", help="Package specific project(s)"),
 ):
     """List projects with unreleased changes and optionally package them."""
     init_colors()
@@ -1132,6 +1322,38 @@ def unreleased(
             print()
         return all_projects
 
+    # Build list of all unreleased projects
+    all_unreleased: list[tuple[str, str]] = []
+    for repo in sorted(unreleased_by_repo.keys()):
+        for project_name, version, entries in sorted(unreleased_by_repo[repo]):
+            all_unreleased.append((project_name, repo))
+
+    # Handle non-interactive mode
+    if non_interactive or package_all or package:
+        print_unreleased_list(False)
+
+        if package_all:
+            # Package all unreleased
+            for project_name, repo in all_unreleased:
+                print(f"\n{Colors.HEADER}{'='*50}{Colors.ENDC}")
+                do_package(project_name, repos_parent, None, non_interactive=True)
+        elif package:
+            # Package specified projects
+            project_names = {name for name, repo in all_unreleased}
+            for proj in package:
+                if proj not in project_names:
+                    print(f"{Colors.WARNING}Warning: '{proj}' not found in unreleased projects, skipping{Colors.ENDC}")
+                    continue
+                # Find the repo for this project
+                for p_name, p_repo in all_unreleased:
+                    if p_name == proj:
+                        print(f"\n{Colors.HEADER}{'='*50}{Colors.ENDC}")
+                        do_package(proj, repos_parent, None, non_interactive=True)
+                        break
+        # If just -y with no --package-all or --package, just list (already printed above)
+        return
+
+    # Interactive mode
     show_details = False
     all_unreleased = print_unreleased_list(show_details)
     total_count = len(all_unreleased)
@@ -1164,7 +1386,7 @@ def unreleased(
             do_package(project_name, repos_parent, None)
     else:
         if is_single_repo:
-            project_choices = [name for name, repo in all_unreleased]
+            project_choices = [name for name, _ in all_unreleased]
         else:
             project_choices = [f"{name} ({repo})" for name, repo in all_unreleased]
 
@@ -1177,15 +1399,16 @@ def unreleased(
             print(f"{Colors.CYAN}No projects selected.{Colors.ENDC}")
             raise typer.Exit()
 
-        for selection in selected:
+        for sel in selected:
             if is_single_repo:
-                project_name = selection
-                repo = repos[0]
+                project_name = sel
+                proj_repo = repos[0]
             else:
-                project_name = selection.rsplit(' (', 1)[0]
+                project_name = sel.rsplit(' (', 1)[0]
+                proj_repo = None
                 for p_name, p_repo in all_unreleased:
                     if p_name == project_name:
-                        repo = p_repo
+                        proj_repo = p_repo
                         break
 
             print(f"\n{Colors.HEADER}{'='*50}{Colors.ENDC}")
@@ -1198,17 +1421,30 @@ app.add_typer(changelog_app, name="changelog")
 
 @changelog_app.command("add")
 def changelog_add(
-    arg1: str = typer.Argument(
-        ...,
+    arg1: Optional[str] = typer.Argument(
+        None,
         help="Project name (if 2 args) or message (if 1 arg)",
         autocompletion=_complete_project_names_with_metadata
     ),
     arg2: Optional[str] = typer.Argument(None, help="Message (if 2 args)"),
     all_repos: bool = typer.Option(False, "--all-repos", help="Show projects from all configured repos"),
+    non_interactive: bool = typer.Option(False, "-y", "--non-interactive", help="Fail instead of prompting for input"),
 ):
     """Add an entry to a project's unreleased changelog section."""
     init_colors()
     repos_parent = str(get_repos_parent())
+
+    # Handle missing arguments
+    if arg1 is None:
+        if non_interactive:
+            print(f"{Colors.FAIL}Error: Non-interactive mode requires project and message arguments.{Colors.ENDC}")
+            print(f"Usage: bt changelog add -y \"ProjectName\" \"Message\"")
+            raise typer.Exit(1)
+        else:
+            print(f"{Colors.FAIL}Error: Message argument required.{Colors.ENDC}")
+            print(f"Usage: bt changelog add \"Message\"")
+            print(f"       bt changelog add \"ProjectName\" \"Message\"")
+            raise typer.Exit(1)
 
     if arg2 is None:
         message = arg1
@@ -1225,6 +1461,13 @@ def changelog_add(
         if len(projects) == 1:
             project_name, repo = projects[0]
             print(f"{Colors.CYAN}Using project: {project_name}{Colors.ENDC}")
+        elif non_interactive:
+            print(f"{Colors.FAIL}Error: Non-interactive mode requires specifying project name.{Colors.ENDC}")
+            print(f"Usage: bt changelog add \"ProjectName\" \"Message\"")
+            print(f"\nAvailable projects:")
+            for name, r in projects:
+                print(f"  - {name}")
+            raise typer.Exit(1)
         else:
             choices = [f"{name} ({repo})" for name, repo in projects]
             selection = questionary.select("Select project:", choices=choices).ask()
@@ -1282,6 +1525,7 @@ def changelog_edit(
         autocompletion=_complete_project_names_with_metadata
     ),
     all_repos: bool = typer.Option(False, "--all-repos", help="Show projects from all configured repos"),
+    non_interactive: bool = typer.Option(False, "-y", "--non-interactive", help="Fail instead of prompting for input"),
 ):
     """Open a project's changelog in an editor."""
     init_colors()
@@ -1313,6 +1557,12 @@ def changelog_edit(
         if len(projects) == 1:
             project_name, repo = projects[0]
             print(f"{Colors.CYAN}Using project: {project_name}{Colors.ENDC}")
+        elif non_interactive:
+            print(f"{Colors.FAIL}Error: Non-interactive mode requires a project name argument.{Colors.ENDC}")
+            print(f"\nAvailable projects:")
+            for name, r in projects:
+                print(f"  - {name}")
+            raise typer.Exit(1)
         else:
             choices = [f"{name} ({repo})" for name, repo in projects]
             selection = questionary.select("Select project:", choices=choices).ask()
@@ -1359,6 +1609,7 @@ def changelog_show(
         autocompletion=_complete_project_names_with_metadata
     ),
     all_repos: bool = typer.Option(False, "--all-repos", help="Show projects from all configured repos"),
+    non_interactive: bool = typer.Option(False, "-y", "--non-interactive", help="Fail instead of prompting for input"),
 ):
     """Show the latest changelog entries for a project."""
     init_colors()
@@ -1390,6 +1641,12 @@ def changelog_show(
         if len(projects) == 1:
             project_name, repo = projects[0]
             print(f"{Colors.CYAN}Using project: {project_name}{Colors.ENDC}")
+        elif non_interactive:
+            print(f"{Colors.FAIL}Error: Non-interactive mode requires a project name argument.{Colors.ENDC}")
+            print(f"\nAvailable projects:")
+            for name, r in projects:
+                print(f"  - {name}")
+            raise typer.Exit(1)
         else:
             # Check which projects have unreleased versions
             choices = []
