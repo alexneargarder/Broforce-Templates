@@ -12,7 +12,7 @@ _broforce_tools_completions()
     COMPREPLY=()
     cur="${COMP_WORDS[COMP_CWORD]}"
     prev="${COMP_WORDS[COMP_CWORD-1]}"
-    commands="create init-thunderstore package unreleased changelog"
+    commands="create init-thunderstore package unreleased changelog deps"
 
     # Complete subcommands
     if [ $COMP_CWORD -eq 1 ]; then
@@ -60,6 +60,11 @@ _broforce_tools_completions()
                 COMPREPLY=($(compgen -W "$(_get_projects package)" -- "$cur"))
             elif [[ "$cur" == -* ]]; then
                 COMPREPLY=($(compgen -W "-y --non-interactive --all-repos --package-all --package --help" -- "$cur"))
+            fi
+            ;;
+        deps)
+            if [[ "$cur" == -* ]]; then
+                COMPREPLY=($(compgen -W "-r --refresh --help" -- "$cur"))
             fi
             ;;
         changelog)
