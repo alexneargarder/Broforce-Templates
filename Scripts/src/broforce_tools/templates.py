@@ -310,6 +310,22 @@ def detect_current_repo(repos_parent: str) -> Optional[str]:
         return None
 
 
+def _dir_has_csproj(path: str, max_depth: int = 2) -> bool:
+    """Check if a directory contains a .csproj file within max_depth levels."""
+    try:
+        for root, dirs, files in os.walk(path):
+            depth = root.replace(path, '').count(os.sep)
+            if depth > max_depth:
+                dirs.clear()
+                continue
+            for f in files:
+                if f.endswith('.csproj'):
+                    return True
+    except (OSError, FileNotFoundError):
+        pass
+    return False
+
+
 def find_projects(
     repos_parent: str,
     repos: list[str],
@@ -345,27 +361,7 @@ def find_projects(
                 if not os.path.isdir(item_path):
                     continue
 
-                has_csproj = False
-                try:
-                    for f in os.listdir(item_path):
-                        if f.endswith('.csproj'):
-                            has_csproj = True
-                            break
-                        subpath = os.path.join(item_path, f)
-                        if os.path.isdir(subpath):
-                            try:
-                                for sf in os.listdir(subpath):
-                                    if sf.endswith('.csproj'):
-                                        has_csproj = True
-                                        break
-                            except (OSError, FileNotFoundError):
-                                pass
-                        if has_csproj:
-                            break
-                except (OSError, FileNotFoundError):
-                    continue
-
-                if not has_csproj:
+                if not _dir_has_csproj(item_path):
                     continue
 
                 has_metadata = _project_has_metadata(repos_parent, repo, item)
@@ -402,27 +398,7 @@ def count_projects_in_repo(repos_parent: str, repo: str) -> int:
             if not os.path.isdir(item_path):
                 continue
 
-            has_csproj = False
-            try:
-                for f in os.listdir(item_path):
-                    if f.endswith('.csproj'):
-                        has_csproj = True
-                        break
-                    subpath = os.path.join(item_path, f)
-                    if os.path.isdir(subpath):
-                        try:
-                            for sf in os.listdir(subpath):
-                                if sf.endswith('.csproj'):
-                                    has_csproj = True
-                                    break
-                        except (OSError, FileNotFoundError):
-                            pass
-                    if has_csproj:
-                        break
-            except (OSError, FileNotFoundError):
-                continue
-
-            if has_csproj:
+            if _dir_has_csproj(item_path):
                 count += 1
     except (OSError, FileNotFoundError):
         pass
