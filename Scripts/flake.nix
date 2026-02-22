@@ -120,11 +120,25 @@ WRAPPER
               description = "Parent directory containing Broforce mod repositories.";
             };
 
+            releaseDir = mkOption {
+              type = types.nullOr types.str;
+              default = null;
+              example = "~/repos/Releases";
+              description = "Central directory to copy release zips into after packaging.";
+            };
+
             repos = mkOption {
               type = types.listOf types.str;
               default = [ ];
               example = [ "BroforceMods" "RocketLib" ];
               description = "List of repository names to search for projects.";
+            };
+
+            ignore = mkOption {
+              type = types.attrsOf (types.listOf types.str);
+              default = { };
+              example = { BroforceMods = [ "ExampleMod" ]; };
+              description = "Map of repo names to lists of project names to skip.";
             };
 
             defaults = {
@@ -152,13 +166,17 @@ WRAPPER
                 repos = cfg.repos;
               } // optionalAttrs (cfg.reposParent != null) {
                 repos_parent = cfg.reposParent;
+              } // optionalAttrs (cfg.releaseDir != null) {
+                release_dir = cfg.releaseDir;
+              } // optionalAttrs (cfg.ignore != {}) {
+                inherit (cfg) ignore;
               } // optionalAttrs (cfg.defaults.namespace != null || cfg.defaults.websiteUrl != null) {
                 defaults = filterAttrs (n: v: v != null) {
                   namespace = cfg.defaults.namespace;
                   website_url = cfg.defaults.websiteUrl;
                 };
               });
-            in mkIf (cfg.repos != [] || cfg.reposParent != null || cfg.defaults.namespace != null) ''
+            in mkIf (cfg.repos != [] || cfg.reposParent != null || cfg.releaseDir != null || cfg.defaults.namespace != null) ''
               for user_home in /home/*; do
                 if [ -d "$user_home" ]; then
                   user_name=$(basename "$user_home")

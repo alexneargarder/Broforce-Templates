@@ -2,6 +2,7 @@
 import json
 import os
 from pathlib import Path
+from typing import Optional
 
 from .paths import get_config_dir, get_cache_dir, is_windows, ensure_dir
 
@@ -27,6 +28,7 @@ def load_config() -> dict:
     - 'defaults': dict with 'namespace' and 'website_url'
     - 'ignore': dict mapping repo names to lists of ignored projects
     - 'repos_parent': path to parent directory containing repos
+    - 'release_dir': path to central directory for release zip copies
     """
     config_file = get_config_file()
     if config_file.exists():
@@ -66,3 +68,12 @@ def get_defaults() -> dict:
     """Get default values for namespace and website_url."""
     config = load_config()
     return config.get('defaults', {})
+
+
+def get_release_dir() -> Optional[str]:
+    """Get the central release directory path, if configured."""
+    config = load_config()
+    release_dir = config.get('release_dir')
+    if release_dir:
+        return str(Path(release_dir).expanduser())
+    return None

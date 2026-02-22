@@ -13,7 +13,7 @@ import questionary
 import typer
 
 from .colors import Colors, init_colors
-from .config import get_configured_repos, load_config, save_config, get_defaults
+from .config import get_configured_repos, get_release_dir, load_config, save_config, get_defaults
 from .paths import get_repos_parent, get_templates_dir, get_cache_dir
 from .templates import (
     copyanything,
@@ -390,6 +390,27 @@ def do_init_thunderstore(
     print(f"  2. Replace icon.png with custom icon")
     print(f"  3. Review manifest.json dependencies")
     print(f"  4. Run: bt package \"{project_name}\"")
+
+
+def _copy_to_release_dir(zip_path: str, namespace: str, package_name: str) -> None:
+    """Copy a packaged zip to the central release directory, if configured."""
+    release_dir = get_release_dir()
+    if not release_dir:
+        return
+
+    try:
+        os.makedirs(release_dir, exist_ok=True)
+
+        prefix = f"{namespace}-{package_name}-"
+        for existing in os.listdir(release_dir):
+            if existing.startswith(prefix) and existing.endswith('.zip'):
+                os.remove(os.path.join(release_dir, existing))
+
+        dest_path = os.path.join(release_dir, os.path.basename(zip_path))
+        shutil.copy2(zip_path, dest_path)
+        print(f"{Colors.GREEN}Copied to release dir:{Colors.ENDC} {dest_path}")
+    except OSError as e:
+        print(f"{Colors.WARNING}Warning: Could not copy to release dir: {e}{Colors.ENDC}")
 
 
 def do_package(
@@ -799,6 +820,8 @@ def do_package(
     print(f"{Colors.CYAN}Size:{Colors.ENDC} {zip_size:.1f} KB")
     print(f"\n{Colors.CYAN}Package ready for Thunderstore upload!{Colors.ENDC}")
 
+    _copy_to_release_dir(zip_path, namespace, package_name)
+
 
 def do_create_project(
     template_type: Optional[str],
@@ -1074,6 +1097,7 @@ def main_callback(
     ctx: typer.Context,
     clear_cache_flag: bool = typer.Option(False, "--clear-cache", help="Clear dependency version cache"),
     add_repo: Optional[str] = typer.Option(None, "--add-repo", help="Add repo to config (uses current if empty string)", autocompletion=_complete_none),
+    set_release_dir: Optional[str] = typer.Option(None, "--set-release-dir", help="Set central directory for release zip copies (empty string to clear)", autocompletion=_complete_none),
 ):
     """Tool for creating Broforce mods and packaging for Thunderstore."""
     init_colors()
@@ -1118,6 +1142,29 @@ def main_callback(
         print(f"\n{Colors.CYAN}Configured repos:{Colors.ENDC}")
         for r in repos:
             print(f"  - {r}")
+        raise typer.Exit()
+
+    if set_release_dir is not None:
+        config = load_config()
+        if set_release_dir == '':
+            if 'release_dir' in config:
+                del config['release_dir']
+                if save_config(config):
+                    print(f"{Colors.GREEN}Cleared release_dir setting{Colors.ENDC}")
+                else:
+                    print(f"{Colors.FAIL}Error: Failed to save config file{Colors.ENDC}")
+                    raise typer.Exit(1)
+            else:
+                print(f"{Colors.BLUE}release_dir is not set{Colors.ENDC}")
+        else:
+            expanded = os.path.expanduser(set_release_dir)
+            config['release_dir'] = set_release_dir
+            if save_config(config):
+                print(f"{Colors.GREEN}Set release_dir to: {set_release_dir}{Colors.ENDC}")
+                print(f"{Colors.CYAN}Expands to: {expanded}{Colors.ENDC}")
+            else:
+                print(f"{Colors.FAIL}Error: Failed to save config file{Colors.ENDC}")
+                raise typer.Exit(1)
         raise typer.Exit()
 
     if ctx.invoked_subcommand is None:
