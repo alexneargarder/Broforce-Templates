@@ -16,7 +16,7 @@ _broforce_tools_completions()
 
     # Complete subcommands
     if [ $COMP_CWORD -eq 1 ]; then
-        COMPREPLY=($(compgen -W "$commands --help --clear-cache --add-repo" -- "$cur"))
+        COMPREPLY=($(compgen -W "$commands --help --clear-cache --add-repo --set-release-dir" -- "$cur"))
         return 0
     fi
 
