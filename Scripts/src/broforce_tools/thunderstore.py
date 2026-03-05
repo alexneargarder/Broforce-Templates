@@ -1,4 +1,5 @@
 """Thunderstore API integration and packaging."""
+import fnmatch
 import json
 import os
 import re
@@ -9,6 +10,7 @@ from typing import Optional
 from .colors import Colors
 from .config import get_cache_file
 from .paths import ensure_dir, get_cache_dir
+from .project_types import PROJECT_TYPES
 
 try:
     import urllib.request
@@ -21,12 +23,14 @@ FALLBACK_DEPENDENCY_VERSIONS = {
     'UMM': '1.1.0',
     'RocketLib': '2.4.2',
     'BroMaker': '2.6.1',
+    'DresserMod': '1.2.1',
 }
 
 THUNDERSTORE_PACKAGES = {
     'UMM': ('UMM', 'UMM'),
     'RocketLib': ('RocketLib', 'RocketLib'),
     'BroMaker': ('BroMaker', 'BroMaker'),
+    'DresserMod': ('PLACEHOLDER_AUTHOR', 'DresserMod'),
 }
 
 CACHE_DURATION = 24 * 60 * 60
@@ -60,7 +64,7 @@ def get_dependency_versions() -> dict[str, str]:
             cache_time = cache_data.get('timestamp', 0)
             if time.time() - cache_time < CACHE_DURATION:
                 versions = cache_data.get('versions', {})
-                if versions:
+                if versions and set(versions.keys()) == set(THUNDERSTORE_PACKAGES.keys()):
                     return versions
         except (json.JSONDecodeError, OSError):
             pass
@@ -94,9 +98,8 @@ def get_dependencies() -> dict[str, str]:
     """Get dependency strings in Thunderstore format."""
     versions = get_dependency_versions()
     return {
-        'UMM': f"UMM-UMM-{versions['UMM']}",
-        'RocketLib': f"RocketLib-RocketLib-{versions['RocketLib']}",
-        'BroMaker': f"BroMaker-BroMaker-{versions['BroMaker']}",
+        name: f"{namespace}-{package}-{versions[name]}"
+        for name, (namespace, package) in THUNDERSTORE_PACKAGES.items()
     }
 
 
@@ -293,22 +296,28 @@ def find_dll_in_modcontent(modcontent_path: str) -> Optional[str]:
     return None
 
 
+def _find_metadata_file(dir_path: str, patterns: list[str]) -> Optional[str]:
+    """Find first file matching any of the metadata patterns in a directory."""
+    try:
+        for f in os.listdir(dir_path):
+            for pattern in patterns:
+                if fnmatch.fnmatch(f, pattern):
+                    return os.path.join(dir_path, f)
+    except (OSError, FileNotFoundError):
+        pass
+    return None
+
+
 def get_version_from_info_json(modcontent_path: str, project_type: str) -> Optional[str]:
-    """Get version from Info.json (mods) or .mod.json (bros)."""
+    """Get version from project metadata file (Info.json, .mod.json, etc.)."""
     if not os.path.exists(modcontent_path):
         return None
 
-    version_file = None
-    if project_type == 'mod':
-        info_path = os.path.join(modcontent_path, 'Info.json')
-        if os.path.exists(info_path):
-            version_file = info_path
-    else:
-        for file in os.listdir(modcontent_path):
-            if file.endswith('.mod.json'):
-                version_file = os.path.join(modcontent_path, file)
-                break
+    type_info = PROJECT_TYPES.get(project_type)
+    if not type_info or not type_info["version_file_label"]:
+        return None
 
+    version_file = _find_metadata_file(modcontent_path, type_info["metadata_patterns"])
     if not version_file:
         return None
 
@@ -347,21 +356,15 @@ def compare_versions(v1: Optional[str], v2: Optional[str]) -> int:
 
 
 def sync_version_file(modcontent_path: str, project_type: str, target_version: str) -> tuple[bool, Optional[str]]:
-    """Sync version in Info.json (mods) or .mod.json (bros) with target version."""
+    """Sync version in metadata file (Info.json, .mod.json, etc.) with target version."""
     if not os.path.exists(modcontent_path):
         return (False, None)
 
-    version_file = None
-    if project_type == 'mod':
-        info_path = os.path.join(modcontent_path, 'Info.json')
-        if os.path.exists(info_path):
-            version_file = info_path
-    else:
-        for file in os.listdir(modcontent_path):
-            if file.endswith('.mod.json'):
-                version_file = os.path.join(modcontent_path, file)
-                break
+    type_info = PROJECT_TYPES.get(project_type)
+    if not type_info or not type_info["version_file_label"]:
+        return (False, None)
 
+    version_file = _find_metadata_file(modcontent_path, type_info["metadata_patterns"])
     if not version_file:
         return (False, None)
 

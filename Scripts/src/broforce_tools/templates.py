@@ -12,6 +12,7 @@ from typing import Optional
 from .colors import Colors
 from .config import get_configured_repos, get_ignored_projects
 from .paths import get_repos_parent, get_templates_dir, is_windows
+from .project_types import PROJECT_TYPES, get_all_metadata_patterns
 
 
 def _make_writable(path: str) -> None:
@@ -172,11 +173,13 @@ def get_bromaker_lib_path(repos_parent: str, broforce_path: str) -> Optional[str
 
 
 def _has_mod_metadata(dir_path: str) -> bool:
-    """Check if a directory contains valid mod metadata (Info.json or *.mod.json)."""
+    """Check if a directory contains valid project metadata."""
+    patterns = get_all_metadata_patterns()
     try:
         for f in os.listdir(dir_path):
-            if f == 'Info.json' or f.endswith('.mod.json'):
-                return True
+            for pattern in patterns:
+                if fnmatch.fnmatch(f, pattern):
+                    return True
     except (OSError, FileNotFoundError):
         pass
     return False
@@ -205,6 +208,9 @@ def find_mod_metadata_dir(project_path: str) -> Optional[str]:
             if _has_mod_metadata(dir_path):
                 return dir_path
 
+    if _has_mod_metadata(project_path):
+        return project_path
+
     return None
 
 
@@ -220,18 +226,17 @@ def get_source_directory(project_path: str) -> Optional[str]:
 
 
 def detect_project_type(project_path: str) -> Optional[str]:
-    """Detect if project is a mod or bro."""
+    """Detect project type (mod, bro, wardrobe, etc.) from metadata files."""
     metadata_dir = find_mod_metadata_dir(project_path)
     if not metadata_dir:
         return None
 
-    if os.path.exists(os.path.join(metadata_dir, 'Info.json')):
-        return 'mod'
-
     try:
-        for file in os.listdir(metadata_dir):
-            if file.endswith('.mod.json'):
-                return 'bro'
+        for f in os.listdir(metadata_dir):
+            for type_key, type_info in PROJECT_TYPES.items():
+                for pattern in type_info["metadata_patterns"]:
+                    if fnmatch.fnmatch(f, pattern):
+                        return type_key
     except (OSError, FileNotFoundError):
         return None
 
@@ -310,8 +315,9 @@ def detect_current_repo(repos_parent: str) -> Optional[str]:
         return None
 
 
-def _dir_has_csproj(path: str, max_depth: int = 2) -> bool:
-    """Check if a directory contains a .csproj file within max_depth levels."""
+def _is_project_dir(path: str, max_depth: int = 2) -> bool:
+    """Check if a directory is a project (has .csproj or metadata files)."""
+    patterns = get_all_metadata_patterns() + ["*.csproj"]
     try:
         for root, dirs, files in os.walk(path):
             depth = root.replace(path, '').count(os.sep)
@@ -319,8 +325,9 @@ def _dir_has_csproj(path: str, max_depth: int = 2) -> bool:
                 dirs.clear()
                 continue
             for f in files:
-                if f.endswith('.csproj'):
-                    return True
+                for pattern in patterns:
+                    if fnmatch.fnmatch(f, pattern):
+                        return True
     except (OSError, FileNotFoundError):
         pass
     return False
@@ -361,7 +368,7 @@ def find_projects(
                 if not os.path.isdir(item_path):
                     continue
 
-                if not _dir_has_csproj(item_path):
+                if not _is_project_dir(item_path):
                     continue
 
                 has_metadata = _project_has_metadata(repos_parent, repo, item)
@@ -398,7 +405,7 @@ def count_projects_in_repo(repos_parent: str, repo: str) -> int:
             if not os.path.isdir(item_path):
                 continue
 
-            if _dir_has_csproj(item_path):
+            if _is_project_dir(item_path):
                 count += 1
     except (OSError, FileNotFoundError):
         pass
