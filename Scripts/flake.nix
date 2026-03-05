@@ -48,6 +48,7 @@
               cp -r "Bro Template" $out/share/broforce-tools/
               cp -r "Mod Template" $out/share/broforce-tools/
               cp -r "ThunderstorePackage" $out/share/broforce-tools/
+              cp -r "Wardrobe Template" $out/share/broforce-tools/
 
               # Copy BroforceModBuild.targets
               mkdir -p $out/share/broforce-tools/Scripts

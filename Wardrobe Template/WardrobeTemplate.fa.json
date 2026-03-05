@@ -1,0 +1,8 @@
+{
+  "Name": "Wardrobe Template",
+  "Wearer": "",
+  "Clothes": {
+    "sprite": "placeholder.png"
+  },
+  "Stats": {}
+}

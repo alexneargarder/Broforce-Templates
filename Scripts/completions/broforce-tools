@@ -25,7 +25,7 @@ _broforce_tools_completions()
     case "$subcommand" in
         create)
             if [[ "$prev" == "-t" ]] || [[ "$prev" == "--type" ]]; then
-                COMPREPLY=($(compgen -W "mod bro" -- "$cur"))
+                COMPREPLY=($(compgen -W "mod bro wardrobe" -- "$cur"))
             elif [[ "$prev" == "-o" ]] || [[ "$prev" == "--output-repo" ]]; then
                 local IFS=$'\n'
                 COMPREPLY=($(compgen -W "$(_get_projects repos)" -- "$cur"))

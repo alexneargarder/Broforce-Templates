@@ -15,6 +15,7 @@ import typer
 from .colors import Colors, init_colors
 from .config import get_configured_repos, get_release_dir, load_config, save_config, get_defaults
 from .paths import get_repos_parent, get_templates_dir, get_cache_dir
+from .project_types import PROJECT_TYPES, get_type_names, get_display_names
 from .templates import (
     copyanything,
     detect_current_repo,
@@ -88,9 +89,8 @@ def _complete_project_names_with_metadata(incomplete: str) -> list[str]:
 
 
 def _complete_project_type(incomplete: str) -> list[str]:
-    """Autocompletion for project type (mod or bro)."""
-    types = ["mod", "bro"]
-    return [t for t in types if t.startswith(incomplete.lower())]
+    """Autocompletion for project type."""
+    return [t for t in get_type_names() if t.startswith(incomplete.lower())]
 
 
 def _complete_repos(incomplete: str) -> list[str]:
@@ -325,6 +325,13 @@ def do_init_thunderstore(
 
     detected_deps = detect_dependencies_from_csproj(project_path)
     dependencies = get_dependencies()
+
+    type_info = PROJECT_TYPES.get(project_type, {})
+    for dep_key in type_info.get("extra_dependencies", []):
+        dep_str = dependencies.get(dep_key)
+        if dep_str and dep_str not in detected_deps:
+            detected_deps.append(dep_str)
+
     if len(detected_deps) > 1:
         print(f"{Colors.BLUE}Detected dependencies:{Colors.ENDC}")
         for dep in detected_deps:
@@ -373,7 +380,7 @@ def do_init_thunderstore(
     if os.path.exists(icon_dest):
         print(f"{Colors.BLUE}icon.png already exists, skipping{Colors.ENDC}")
     elif os.path.exists(icon_template):
-        shutil.copy2(icon_template, icon_dest)
+        shutil.copy(icon_template, icon_dest)
         print(f"{Colors.GREEN}Created icon.png{Colors.ENDC}")
         print(f"{Colors.WARNING}⚠️  Replace icon.png with a custom 256x256 image!{Colors.ENDC}")
     else:
@@ -478,12 +485,14 @@ def do_package(
         print(f"{Colors.FAIL}Error: Could not find metadata folder{Colors.ENDC}")
         raise typer.Exit(1)
 
-    dll_path = find_dll_in_modcontent(metadata_dir)
+    type_info = PROJECT_TYPES.get(project_type, {})
+    if type_info.get("has_code", True):
+        dll_path = find_dll_in_modcontent(metadata_dir)
 
-    if not dll_path:
-        print(f"{Colors.FAIL}Error: No DLL found in metadata folder{Colors.ENDC}")
-        print(f"Build the project first")
-        raise typer.Exit(1)
+        if not dll_path:
+            print(f"{Colors.FAIL}Error: No DLL found in metadata folder{Colors.ENDC}")
+            print(f"Build the project first")
+            raise typer.Exit(1)
 
     icon_template = os.path.join(template_dir, 'ThunderstorePackage', 'icon.png')
     if os.path.exists(icon_template) and filecmp.cmp(icon_path, icon_template, shallow=False):
@@ -511,7 +520,7 @@ def do_package(
         versions = {
             changelog_name: changelog_version,
             'manifest.json': manifest_version,
-            'Info.json/.mod.json': info_version
+            type_info.get("version_file_label", "metadata"): info_version
         }
 
         valid_versions = {k: v for k, v in versions.items() if v is not None}
@@ -691,8 +700,9 @@ def do_package(
         version_file_name = os.path.basename(version_file_path)
         print(f"{Colors.BLUE}{version_file_name} already at version {version}{Colors.ENDC}")
     else:
-        version_file_name = 'Info.json' if project_type == 'mod' else '.mod.json'
-        print(f"{Colors.WARNING}Warning: Could not find {version_file_name} to sync version{Colors.ENDC}")
+        label = type_info.get("version_file_label")
+        if label:
+            print(f"{Colors.WARNING}Warning: Could not find {label} to sync version{Colors.ENDC}")
 
     if project_type == 'bro' and version_file_path:
         try:
@@ -796,16 +806,13 @@ def do_package(
             f.write(changelog_cleaned)
 
         umm_base = os.path.join(temp_dir, 'UMM')
-        if project_type == 'mod':
-            target_dir = os.path.join(umm_base, 'Mods', project_name)
-        else:
-            target_dir = os.path.join(umm_base, 'BroMaker_Storage', project_name)
+        target_dir = os.path.join(umm_base, type_info.get("install_subdir", "Mods"), project_name)
 
         os.makedirs(target_dir, exist_ok=True)
 
         copyanything(metadata_dir, target_dir)
 
-        with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zipf:
+        with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED, strict_timestamps=False) as zipf:
             for root, dirs, files in os.walk(temp_dir):
                 for file in files:
                     file_path = os.path.join(root, file)
@@ -831,7 +838,7 @@ def do_create_project(
     non_interactive: bool = False,
     no_thunderstore: bool = False,
 ) -> None:
-    """Create a new mod or bro project from templates."""
+    """Create a new project from templates."""
     template_dir = get_templates_dir()
     repos_parent = str(get_repos_parent())
     scripts_dir = os.path.join(template_dir, 'Scripts')
@@ -891,11 +898,11 @@ def do_create_project(
     if template_type:
         pass
     elif non_interactive:
-        missing.append(("--type / -t", "Project type (mod or bro)"))
+        missing.append(("--type / -t", f"Project type ({', '.join(get_type_names())})"))
     else:
         choice = questionary.select(
             "What would you like to create?",
-            choices=["Mod", "Bro"]
+            choices=get_display_names()
         ).ask()
 
         if not choice:
@@ -903,10 +910,9 @@ def do_create_project(
 
         template_type = choice.lower()
 
-    if template_type == "mod":
-        source_template_name = "Mod Template"
-    elif template_type == "bro":
-        source_template_name = "Bro Template"
+    type_info = PROJECT_TYPES.get(template_type) if template_type else None
+    if type_info:
+        source_template_name = type_info["template_dir_name"]
     else:
         source_template_name = ""
 
@@ -946,7 +952,7 @@ def do_create_project(
         print(f"{Colors.WARNING}Please ensure the repository '{output_repo_name}' exists in: {repos_parent}{Colors.ENDC}")
         raise typer.Exit(1)
 
-    if output_repo_path != template_dir:
+    if type_info and type_info["has_code"] and output_repo_path != template_dir:
         output_scripts_dir = os.path.join(output_repo_path, 'Scripts')
         if not os.path.exists(output_scripts_dir):
             os.makedirs(output_scripts_dir)
@@ -1014,24 +1020,14 @@ def do_create_project(
 
     try:
         rename_files(newRepoPath, source_template_name, newName)
+        rename_files(newRepoPath, type_info["class_prefix"], newNameNoSpaces)
 
-        if template_type == "mod":
-            rename_files(newRepoPath, 'ModTemplate', newNameNoSpaces)
-        else:
-            rename_files(newRepoPath, 'BroTemplate', newNameNoSpaces)
-
-        if template_type == "mod":
-            fileTypes = ["*.csproj", "*.cs", "*.sln", "*.json", "*.xml"]
-        else:
-            fileTypes = ["*.csproj", "*.cs", "*.sln", "*.json"]
+        fileTypes = type_info["file_patterns"]
 
         for fileType in fileTypes:
             find_replace(newRepoPath, source_template_name, newName, fileType)
             find_replace(newRepoPath, source_template_name.replace(' ', '_'), newNameWithUnderscore, fileType)
-            if template_type == "mod":
-                find_replace(newRepoPath, "ModTemplate", newNameNoSpaces, fileType)
-            else:
-                find_replace(newRepoPath, "BroTemplate", newNameNoSpaces, fileType)
+            find_replace(newRepoPath, type_info["class_prefix"], newNameNoSpaces, fileType)
 
             find_replace(newRepoPath, "AUTHOR_NAME", authorName, fileType)
             find_replace(newRepoPath, "REPO_NAME", output_repo_name, fileType)
@@ -1060,12 +1056,16 @@ def do_create_project(
 
         if no_thunderstore:
             print(f"\n{Colors.CYAN}Next steps:{Colors.ENDC}")
-            print(f"  1. Open the project in Visual Studio")
-            print(f"  2. Build the project (builds to game automatically)")
-            print(f"  3. Launch Broforce to test your {template_type}")
-            print(f"  4. Run 'bt init-thunderstore' when ready to publish")
+            if type_info["has_code"]:
+                print(f"  1. Open the project in Visual Studio")
+                print(f"  2. Build the project (builds to game automatically)")
+                print(f"  3. Launch Broforce to test your {template_type}")
+                print(f"  4. Run 'bt init-thunderstore' when ready to publish")
+            else:
+                print(f"  1. Edit the .fa.json file to set the Wearer and sprite")
+                print(f"  2. Replace placeholder.png with your sprite")
+                print(f"  3. Run 'bt init-thunderstore' when ready to publish")
         elif non_interactive:
-            # In non-interactive mode without --no-thunderstore, skip init (can't prompt for metadata)
             print(f"\n{Colors.CYAN}Note: Run 'bt init-thunderstore' to set up Thunderstore metadata.{Colors.ENDC}")
         else:
             setup_thunderstore = questionary.confirm(
@@ -1080,10 +1080,15 @@ def do_create_project(
                 do_init_thunderstore(newName, repos_parent)
             else:
                 print(f"\n{Colors.CYAN}Next steps:{Colors.ENDC}")
-                print(f"  1. Open the project in Visual Studio")
-                print(f"  2. Build the project (builds to game automatically)")
-                print(f"  3. Launch Broforce to test your {template_type}")
-                print(f"  4. Run 'bt init-thunderstore' when ready to publish")
+                if type_info["has_code"]:
+                    print(f"  1. Open the project in Visual Studio")
+                    print(f"  2. Build the project (builds to game automatically)")
+                    print(f"  3. Launch Broforce to test your {template_type}")
+                    print(f"  4. Run 'bt init-thunderstore' when ready to publish")
+                else:
+                    print(f"  1. Edit the .fa.json file to set the Wearer and sprite")
+                    print(f"  2. Replace placeholder.png with your sprite")
+                    print(f"  3. Run 'bt init-thunderstore' when ready to publish")
 
     except Exception as e:
         print(f"{Colors.FAIL}Error: Failed during file processing: {e}{Colors.ENDC}")
@@ -1173,7 +1178,7 @@ def main_callback(
         choice = questionary.select(
             "What would you like to do?",
             choices=[
-                "Create new mod / bro project",
+                f"Create new {' / '.join(get_type_names())} project",
                 "Setup Thunderstore metadata for an existing project",
                 "Package for releasing on Thunderstore",
                 "View/package unreleased projects",
@@ -1187,7 +1192,7 @@ def main_callback(
         if choice == "Show help":
             print(ctx.get_help())
             raise typer.Exit()
-        elif choice == "Create new mod / bro project":
+        elif choice.startswith("Create new"):
             do_create_project(None, None, None, None)
         elif choice == "Setup Thunderstore metadata for an existing project":
             selected = select_projects_interactive(repos_parent, 'init', use_all_repos=False)
@@ -1211,14 +1216,14 @@ def main_callback(
 
 @app.command()
 def create(
-    type: Optional[str] = typer.Option(None, "-t", "--type", help="Project type: mod or bro", autocompletion=_complete_project_type),
+    type: Optional[str] = typer.Option(None, "-t", "--type", help=f"Project type: {', '.join(get_type_names())}", autocompletion=_complete_project_type),
     name: Optional[str] = typer.Option(None, "-n", "--name", help="Project name", autocompletion=_complete_none),
     author: Optional[str] = typer.Option(None, "-a", "--author", help="Author name", autocompletion=_complete_none),
     output_repo: Optional[str] = typer.Option(None, "-o", "--output-repo", help="Target repository", autocompletion=_complete_repos),
     non_interactive: bool = typer.Option(False, "-y", "--non-interactive", help="Fail instead of prompting for input"),
     no_thunderstore: bool = typer.Option(False, "--no-thunderstore", help="Skip Thunderstore metadata setup"),
 ):
-    """Create a new mod or bro project from templates."""
+    """Create a new project from templates."""
     init_colors()
     do_create_project(type, name, author, output_repo, non_interactive, no_thunderstore)
 
