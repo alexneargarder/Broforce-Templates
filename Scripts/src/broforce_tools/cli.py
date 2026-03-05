@@ -12,7 +12,9 @@ from typing import Optional
 import questionary
 import typer
 
-from .colors import Colors, init_colors
+from . import __version__
+from .colors import Colors, init_colors, CHECK, WARNING_ICON, ARROW
+from .paths import TemplatesDirNotFound
 from .config import get_configured_repos, get_release_dir, load_config, save_config, get_defaults
 from .paths import get_repos_parent, get_templates_dir, get_cache_dir
 from .project_types import PROJECT_TYPES, get_type_names, get_display_names
@@ -74,18 +76,24 @@ def _escape_for_completion(name: str) -> str:
 
 def _complete_project_names_without_metadata(incomplete: str) -> list[str]:
     """Autocompletion for project names (only projects WITHOUT Thunderstore metadata)."""
-    repos_parent = str(get_repos_parent())
-    repos = _get_repos_for_completion(repos_parent)
-    projects = find_projects(repos_parent, repos, exclude_with_metadata=True)
-    return [_escape_for_completion(p[0]) for p in projects]
+    try:
+        repos_parent = str(get_repos_parent())
+        repos = _get_repos_for_completion(repos_parent)
+        projects = find_projects(repos_parent, repos, exclude_with_metadata=True)
+        return [_escape_for_completion(p[0]) for p in projects]
+    except TemplatesDirNotFound:
+        return []
 
 
 def _complete_project_names_with_metadata(incomplete: str) -> list[str]:
     """Autocompletion for project names (only projects with Thunderstore metadata)."""
-    repos_parent = str(get_repos_parent())
-    repos = _get_repos_for_completion(repos_parent)
-    projects = find_projects(repos_parent, repos, require_metadata=True)
-    return [_escape_for_completion(p[0]) for p in projects]
+    try:
+        repos_parent = str(get_repos_parent())
+        repos = _get_repos_for_completion(repos_parent)
+        projects = find_projects(repos_parent, repos, require_metadata=True)
+        return [_escape_for_completion(p[0]) for p in projects]
+    except TemplatesDirNotFound:
+        return []
 
 
 def _complete_project_type(incomplete: str) -> list[str]:
@@ -382,16 +390,16 @@ def do_init_thunderstore(
     elif os.path.exists(icon_template):
         shutil.copy(icon_template, icon_dest)
         print(f"{Colors.GREEN}Created icon.png{Colors.ENDC}")
-        print(f"{Colors.WARNING}⚠️  Replace icon.png with a custom 256x256 image!{Colors.ENDC}")
+        print(f"{Colors.WARNING}{WARNING_ICON}Replace icon.png with a custom 256x256 image!{Colors.ENDC}")
     else:
         print(f"{Colors.WARNING}Warning: Icon template not found at {icon_template}{Colors.ENDC}")
 
-    print(f"\n{Colors.GREEN}{Colors.BOLD}✓ Thunderstore metadata initialized!{Colors.ENDC}")
+    print(f"\n{Colors.GREEN}{Colors.BOLD}{CHECK} Thunderstore metadata initialized!{Colors.ENDC}")
     print(f"{Colors.CYAN}Location:{Colors.ENDC} {releases_path}")
     print(f"\n{Colors.CYAN}Files created:{Colors.ENDC}")
     print(f"  - manifest.json")
     print(f"  - README.md (customize for Thunderstore)")
-    print(f"  - icon.png (⚠️  placeholder - replace with 256x256 custom icon!)")
+    print(f"  - icon.png ({WARNING_ICON}placeholder - replace with 256x256 custom icon!)")
     print(f"\n{Colors.CYAN}Next steps:{Colors.ENDC}")
     print(f"  1. Edit {releases_path}/README.md")
     print(f"  2. Replace icon.png with custom icon")
@@ -429,6 +437,7 @@ def do_package(
     overwrite: bool = False,
     update_deps: Optional[bool] = None,
     add_missing_deps: Optional[bool] = None,
+    keep_unreleased: bool = False,
 ) -> None:
     """Create Thunderstore package for an existing project."""
     template_dir = get_templates_dir()
@@ -496,7 +505,7 @@ def do_package(
 
     icon_template = os.path.join(template_dir, 'ThunderstorePackage', 'icon.png')
     if os.path.exists(icon_template) and filecmp.cmp(icon_path, icon_template, shallow=False):
-        print(f"{Colors.WARNING}⚠️  Warning: Using placeholder icon{Colors.ENDC}")
+        print(f"{Colors.WARNING}{WARNING_ICON}Warning: Using placeholder icon{Colors.ENDC}")
 
     changelog_name = os.path.basename(changelog_path)
 
@@ -622,7 +631,7 @@ def do_package(
     if outdated_deps:
         print(f"\n{Colors.WARNING}Outdated dependencies detected:{Colors.ENDC}")
         for old_dep, new_dep in outdated_deps:
-            print(f"  {old_dep} → {new_dep}")
+            print(f"  {old_dep} {ARROW} {new_dep}")
 
         if non_interactive:
             # Default to True in non-interactive mode unless explicitly set to False
@@ -716,7 +725,7 @@ def do_package(
 
                 if current_bromaker_version != latest_bromaker_version:
                     print(f"\n{Colors.WARNING}Outdated BroMakerVersion in {os.path.basename(version_file_path)}:{Colors.ENDC}")
-                    print(f"  {current_bromaker_version} → {latest_bromaker_version}")
+                    print(f"  {current_bromaker_version} {ARROW} {latest_bromaker_version}")
 
                     if non_interactive:
                         # Auto-update in non-interactive mode
@@ -797,7 +806,7 @@ def do_package(
             flags=re.IGNORECASE
         )
 
-        if changelog_cleaned != changelog_content:
+        if not keep_unreleased and changelog_cleaned != changelog_content:
             with open(changelog_path, 'w', encoding='utf-8') as f:
                 f.write(changelog_cleaned)
             print(f"{Colors.GREEN}Removed (unreleased) tag from {changelog_name}{Colors.ENDC}")
@@ -821,7 +830,7 @@ def do_package(
 
     zip_size = os.path.getsize(zip_path) / 1024
 
-    print(f"\n{Colors.GREEN}{Colors.BOLD}✓ Package created!{Colors.ENDC}")
+    print(f"\n{Colors.GREEN}{Colors.BOLD}{CHECK} Package created!{Colors.ENDC}")
     print(f"{Colors.CYAN}Version:{Colors.ENDC} {version}")
     print(f"{Colors.CYAN}File:{Colors.ENDC} {zip_path}")
     print(f"{Colors.CYAN}Size:{Colors.ENDC} {zip_size:.1f} KB")
@@ -980,22 +989,19 @@ def do_create_project(
         else:
             print(f"{Colors.WARNING}Warning: BroforceModBuild.targets not found in template repo{Colors.ENDC}")
 
-    releasesPath = os.path.join(output_repo_path, 'Releases')
-    newReleaseFolder = os.path.join(releasesPath, newName)
+    releases_dir = os.path.join(output_repo_path, 'Releases')
+    release_dir = os.path.join(output_repo_path, 'Release')
+    if os.path.isdir(release_dir) and not os.path.isdir(releases_dir):
+        base_release = release_dir
+    else:
+        base_release = releases_dir
+    newReleaseFolder = os.path.join(base_release, newName)
     newRepoPath = os.path.join(output_repo_path, newName)
 
     if not os.path.exists(templatePath):
         print(f"{Colors.FAIL}Error: Template directory not found: {templatePath}{Colors.ENDC}")
         print(f"Please ensure the '{source_template_name}' directory exists in your repository.")
         raise typer.Exit(1)
-
-    if not os.path.exists(releasesPath):
-        try:
-            os.makedirs(releasesPath)
-            print(f"{Colors.GREEN}Created Releases directory: {releasesPath}{Colors.ENDC}")
-        except Exception as e:
-            print(f"{Colors.FAIL}Error: Failed to create Releases directory: {e}{Colors.ENDC}")
-            raise typer.Exit(1)
 
     if os.path.exists(newReleaseFolder):
         print(f"{Colors.FAIL}Error: Release directory already exists: {newReleaseFolder}{Colors.ENDC}")
@@ -1008,7 +1014,7 @@ def do_create_project(
         raise typer.Exit(1)
 
     try:
-        os.makedirs(newReleaseFolder)
+        os.makedirs(newReleaseFolder, exist_ok=True)
         copyanything(templatePath, newRepoPath)
     except Exception as e:
         print(f"{Colors.FAIL}Error: Failed to copy template files: {e}{Colors.ENDC}")
@@ -1097,16 +1103,50 @@ def do_create_project(
         raise typer.Exit(1)
 
 
+def _version_callback(value: bool):
+    if value:
+        print(f"broforce-tools {__version__}")
+        raise typer.Exit()
+
+
+def _handle_templates_not_found() -> None:
+    """Prompt user for templates dir on first pipx run and save to config."""
+    print(f"{Colors.WARNING}Could not find Broforce-Templates directory.{Colors.ENDC}")
+    print(f"{Colors.CYAN}This is needed for project creation and template operations.{Colors.ENDC}\n")
+    path = questionary.text(
+        "Enter path to Broforce-Templates repo:",
+        validate=lambda text: True if os.path.isdir(text) and os.path.isdir(os.path.join(text, 'Mod Template')) else "Directory must exist and contain 'Mod Template' folder"
+    ).ask()
+    if not path:
+        raise typer.Exit(1)
+    config = load_config()
+    config['templates_dir'] = path
+    if 'repos_parent' not in config:
+        config['repos_parent'] = os.path.dirname(os.path.abspath(path))
+    if save_config(config):
+        print(f"{Colors.GREEN}Saved templates_dir to config{Colors.ENDC}")
+    else:
+        print(f"{Colors.FAIL}Error: Failed to save config{Colors.ENDC}")
+        raise typer.Exit(1)
+
+
 @app.callback(invoke_without_command=True)
 def main_callback(
     ctx: typer.Context,
+    version: bool = typer.Option(False, "--version", callback=_version_callback, is_eager=True, help="Show version"),
     clear_cache_flag: bool = typer.Option(False, "--clear-cache", help="Clear dependency version cache"),
     add_repo: Optional[str] = typer.Option(None, "--add-repo", help="Add repo to config (uses current if empty string)", autocompletion=_complete_none),
+    remove_repo: Optional[str] = typer.Option(None, "--remove-repo", help="Remove repo from config", autocompletion=_complete_repos),
     set_release_dir: Optional[str] = typer.Option(None, "--set-release-dir", help="Set central directory for release zip copies (empty string to clear)", autocompletion=_complete_none),
 ):
     """Tool for creating Broforce mods and packaging for Thunderstore."""
     init_colors()
-    repos_parent = str(get_repos_parent())
+
+    try:
+        repos_parent = str(get_repos_parent())
+    except TemplatesDirNotFound:
+        _handle_templates_not_found()
+        repos_parent = str(get_repos_parent())
 
     if clear_cache_flag:
         cache_file = get_cache_file()
@@ -1149,6 +1189,26 @@ def main_callback(
             print(f"  - {r}")
         raise typer.Exit()
 
+    if remove_repo is not None:
+        config = load_config()
+        repos = config.get('repos', [])
+
+        if remove_repo in repos:
+            repos.remove(remove_repo)
+            config['repos'] = repos
+            if save_config(config):
+                print(f"{Colors.GREEN}Removed '{remove_repo}' from configured repos{Colors.ENDC}")
+            else:
+                print(f"{Colors.FAIL}Error: Failed to save config file{Colors.ENDC}")
+                raise typer.Exit(1)
+        else:
+            print(f"{Colors.WARNING}'{remove_repo}' is not in configured repos{Colors.ENDC}")
+
+        print(f"\n{Colors.CYAN}Configured repos:{Colors.ENDC}")
+        for r in repos:
+            print(f"  - {r}")
+        raise typer.Exit()
+
     if set_release_dir is not None:
         config = load_config()
         if set_release_dir == '':
@@ -1182,6 +1242,8 @@ def main_callback(
                 "Setup Thunderstore metadata for an existing project",
                 "Package for releasing on Thunderstore",
                 "View/package unreleased projects",
+                "Manage changelogs",
+                "Show dependency versions",
                 "Show help"
             ]
         ).ask()
@@ -1212,6 +1274,21 @@ def main_callback(
                 do_package(project_name, repos_parent, None)
         elif choice == "View/package unreleased projects":
             ctx.invoke(unreleased)
+        elif choice == "Manage changelogs":
+            sub = questionary.select(
+                "Changelog action:",
+                choices=["Add entry", "Show entries", "Edit in editor"]
+            ).ask()
+            if not sub:
+                raise typer.Exit()
+            if sub == "Add entry":
+                ctx.invoke(changelog_add)
+            elif sub == "Show entries":
+                ctx.invoke(changelog_show)
+            elif sub == "Edit in editor":
+                ctx.invoke(changelog_edit)
+        elif choice == "Show dependency versions":
+            ctx.invoke(deps)
 
 
 @app.command()
@@ -1283,6 +1360,7 @@ def package(
     overwrite: bool = typer.Option(False, "--overwrite", help="Overwrite existing package ZIP"),
     update_deps: Optional[bool] = typer.Option(None, "--update-deps/--no-update-deps", help="Update outdated dependencies (default: yes in non-interactive)"),
     add_missing_deps: Optional[bool] = typer.Option(None, "--add-missing-deps/--no-add-missing-deps", help="Add missing dependencies (default: yes in non-interactive)"),
+    keep_unreleased: bool = typer.Option(False, "--keep-unreleased", help="Don't strip '(unreleased)' tag from source changelog (for test packaging)"),
 ):
     """Create a Thunderstore-ready ZIP package."""
     init_colors()
@@ -1301,6 +1379,7 @@ def package(
             overwrite=overwrite,
             update_deps=update_deps,
             add_missing_deps=add_missing_deps,
+            keep_unreleased=keep_unreleased,
         )
     else:
         selected = select_projects_interactive(repos_parent, 'package', use_all_repos=all_repos)
@@ -1316,6 +1395,7 @@ def package(
                 overwrite=overwrite,
                 update_deps=update_deps,
                 add_missing_deps=add_missing_deps,
+                keep_unreleased=keep_unreleased,
             )
 
 

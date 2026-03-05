@@ -9,6 +9,11 @@ import tempfile
 from pathlib import Path
 
 
+class TemplatesDirNotFound(Exception):
+    """Raised when the Broforce-Templates directory cannot be located."""
+    pass
+
+
 def is_windows() -> bool:
     return sys.platform == 'win32'
 
@@ -55,14 +60,32 @@ def get_cache_dir() -> Path:
 def get_templates_dir() -> Path:
     """Get templates directory containing 'Mod Template/', 'Bro Template/', etc.
 
-    Checks BROFORCE_TEMPLATES_DIR env var first (set by Nix wrapper).
-    Falls back to parent of script directory (Broforce-Templates repo root).
+    Lookup order:
+    1. BROFORCE_TEMPLATES_DIR env var (set by Nix wrapper)
+    2. Script-relative path (works for in-repo execution)
+    3. Config file 'templates_dir' key (set by first-run prompt for pipx installs)
+
+    Raises TemplatesDirNotFound if none found.
     """
     env_path = os.environ.get('BROFORCE_TEMPLATES_DIR')
     if env_path:
         return Path(env_path)
 
-    return _get_script_dir().parent
+    script_relative = _get_script_dir().parent
+    if (script_relative / 'Mod Template').is_dir():
+        return script_relative
+
+    from .config import load_config
+    config = load_config()
+    if 'templates_dir' in config:
+        config_path = Path(config['templates_dir']).expanduser()
+        if config_path.is_dir():
+            return config_path
+
+    raise TemplatesDirNotFound(
+        "Could not find Broforce-Templates directory. "
+        "Run 'bt' interactively to configure, or set BROFORCE_TEMPLATES_DIR."
+    )
 
 
 def get_repos_parent() -> Path:
@@ -70,7 +93,7 @@ def get_repos_parent() -> Path:
 
     Checks BROFORCE_REPOS_PARENT env var first.
     Then checks config file for 'repos_parent' setting.
-    Falls back to parent of templates directory.
+    Falls back to parent of templates directory (may raise TemplatesDirNotFound).
     """
     env_path = os.environ.get('BROFORCE_REPOS_PARENT')
     if env_path:
@@ -81,6 +104,7 @@ def get_repos_parent() -> Path:
     if 'repos_parent' in config:
         return Path(config['repos_parent']).expanduser()
 
+    # May raise TemplatesDirNotFound for pipx installs without config
     return get_templates_dir().parent
 
 

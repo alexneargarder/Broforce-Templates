@@ -58,8 +58,6 @@ def find_replace(directory: str, find: str, replace: str, file_pattern: str) -> 
             s = s.replace(find, replace)
             with open(filepath, "w", encoding='utf-8') as f:
                 f.write(s)
-        for dir in dirs:
-            find_replace(os.path.join(path, dir), find, replace, file_pattern)
 
 
 def rename_files(directory: str, find: str, replace: str) -> None:
@@ -243,6 +241,23 @@ def detect_project_type(project_path: str) -> Optional[str]:
     return None
 
 
+def _normalize_wsl_path(path: str) -> tuple[str, Optional[str]]:
+    """Normalize a path for WSL/Windows cross-compatibility.
+
+    Returns (primary_path, alt_path) where primary uses /mnt/X/ format
+    and alt uses X:/ format (or None if not a drive path).
+    """
+    alt = None
+    match = re.match(r'^([a-z]):/(.*)', path)
+    if match:
+        path = f'/mnt/{match.group(1)}/{match.group(2)}'
+    else:
+        match = re.match(r'^/mnt/([a-z])/(.*)', path)
+        if match:
+            alt = f'{match.group(1)}:/{match.group(2)}'
+    return path, alt
+
+
 def detect_current_repo(repos_parent: str) -> Optional[str]:
     """Detect which repo we're currently in based on cwd."""
     cwd = os.getcwd()
@@ -250,29 +265,11 @@ def detect_current_repo(repos_parent: str) -> Optional[str]:
     cwd_original = os.path.abspath(cwd).replace('\\', '/')
     repos_original = os.path.abspath(repos_parent).replace('\\', '/')
 
-    cwd_abs = cwd_original.lower()
-    repos_abs = repos_original.lower()
+    cwd_abs, cwd_abs_alt = _normalize_wsl_path(cwd_original.lower())
+    repos_abs, repos_abs_alt = _normalize_wsl_path(repos_original.lower())
 
-    cwd_abs_alt = None
-    repos_abs_alt = None
-
-    if cwd_abs.startswith('c:/'):
-        cwd_abs = '/mnt/c/' + cwd_abs[3:]
-    elif cwd_abs.startswith('/mnt/c/'):
-        cwd_abs_alt = 'c:/' + cwd_abs[7:]
-
-    if repos_abs.startswith('c:/'):
-        repos_abs = '/mnt/c/' + repos_abs[3:]
-    elif repos_abs.startswith('/mnt/c/'):
-        repos_abs_alt = 'c:/' + repos_abs[7:]
-
-    cwd_orig_normalized = cwd_original.lower()
-    if cwd_orig_normalized.startswith('c:/'):
-        cwd_orig_normalized = '/mnt/c/' + cwd_orig_normalized[3:]
-
-    repos_orig_normalized = repos_original.lower()
-    if repos_orig_normalized.startswith('c:/'):
-        repos_orig_normalized = '/mnt/c/' + repos_orig_normalized[3:]
+    cwd_orig_normalized, _ = _normalize_wsl_path(cwd_original.lower())
+    repos_orig_normalized, _ = _normalize_wsl_path(repos_original.lower())
 
     try:
         is_inside = False

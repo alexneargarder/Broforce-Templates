@@ -38,6 +38,7 @@ Tool for creating projects, setting up Thunderstore metadata, and packaging mods
 ```bash
 pipx install path/to/Broforce-Templates/Scripts
 ```
+Requires Python 3.9+. After installing via pipx, run `bt` once to configure the path to your Broforce-Templates directory.
 
 **NixOS:**
 ```nix
@@ -80,6 +81,9 @@ Create a config file to configure repos and defaults:
 - `ignore` - Per-repo lists of project names to hide from selection menus
 - `defaults.namespace` - Pre-filled namespace for init-thunderstore
 - `defaults.website_url` - Pre-filled URL for init-thunderstore
+- `repos_parent` - Parent directory containing all repos (auto-detected from Broforce-Templates location)
+- `release_dir` - Central directory to copy release zips after packaging
+- `templates_dir` - Path to Broforce-Templates repo (needed for pipx installs)
 
 ### create
 
@@ -95,7 +99,7 @@ bt create -t bro -n "My Bro" -a "YourName" -o "BroforceMods"
 ```
 
 Options:
-- `-t, --type` - Project type: `mod` or `bro`
+- `-t, --type` - Project type: `mod`, `bro`, or `wardrobe`
 - `-n, --name` - Project name
 - `-a, --author` - Author name
 - `-o, --output-repo` - Target repository (defaults to current)
@@ -141,7 +145,46 @@ bt package "Project Name" --version 2.0.0
 
 The version is read from `Changelog.md` (looks for `## v1.0.0` or `## v1.0.0 (unreleased)`). The tool syncs this version to manifest.json and Info.json/.mod.json.
 
+By default, the `(unreleased)` tag is removed from the source Changelog.md when packaging. Use `--keep-unreleased` to preserve it for test packages.
+
 Output: `{Namespace}-{PackageName}-{Version}.zip` in the project's release folder.
+
+### unreleased
+
+List projects with unreleased changelog entries and optionally package them.
+
+```bash
+bt unreleased              # Current repo only
+bt unreleased --all-repos  # All configured repos
+```
+
+### changelog
+
+Manage project changelogs.
+
+```bash
+# Add entry (interactive project selection)
+bt changelog add "Fixed spawn bug"
+
+# Add entry to specific project
+bt changelog add "Project Name" "Fixed spawn bug"
+
+# Show latest entries
+bt changelog show
+bt changelog show "Project Name"
+
+# Open in editor
+bt changelog edit "Project Name"
+```
+
+### deps
+
+Show dependency versions (cached from Thunderstore API).
+
+```bash
+bt deps              # Show cached versions
+bt deps --refresh    # Force re-fetch from API
+```
 
 ### Global Flags
 
@@ -149,7 +192,10 @@ These work with any subcommand or standalone:
 
 - `--all-repos` - Show projects from all configured repos (not just current directory)
 - `--add-repo [NAME]` - Add a repo to the config (uses current repo if name omitted)
+- `--remove-repo [NAME]` - Remove a repo from the config
+- `--set-release-dir [PATH]` - Set central directory for release zip copies (empty to clear)
 - `--clear-cache` - Clear the dependency version cache
+- `--version` - Show tool version
 
 ## Building Projects
 

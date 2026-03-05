@@ -30,7 +30,7 @@ THUNDERSTORE_PACKAGES = {
     'UMM': ('UMM', 'UMM'),
     'RocketLib': ('RocketLib', 'RocketLib'),
     'BroMaker': ('BroMaker', 'BroMaker'),
-    'DresserMod': ('PLACEHOLDER_AUTHOR', 'DresserMod'),
+    'DresserMod': ('Gorzontrok', 'DresserMod'),
 }
 
 CACHE_DURATION = 24 * 60 * 60
