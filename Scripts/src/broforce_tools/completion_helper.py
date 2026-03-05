@@ -10,11 +10,14 @@ def main():
     mode = sys.argv[1]
 
     from .config import load_config
-    from .paths import get_repos_parent
+    from .paths import get_repos_parent, TemplatesDirNotFound
     from .templates import find_projects
 
     config = load_config()
-    repos_parent = str(get_repos_parent())
+    try:
+        repos_parent = str(get_repos_parent())
+    except TemplatesDirNotFound:
+        return
     repos = config.get('repos', [])
 
     if mode == 'repos':

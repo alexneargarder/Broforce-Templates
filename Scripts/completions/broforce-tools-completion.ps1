@@ -1,110 +1,117 @@
-# PowerShell tab completion for broforce-tools.py
-# Add to your PowerShell profile: . "C:\Users\Alex\repos\Broforce-Templates\Scripts\broforce-tools-completion.ps1"
+# PowerShell tab completion for broforce-tools (bt)
+# Add to your PowerShell profile: . "/path/to/broforce-tools-completion.ps1"
 
-$script:broforcetoolsPath = "C:\Users\Alex\repos\Broforce-Templates\Scripts\broforce-tools.py"
-$script:broforcetoolsCommands = @('create', 'init-thunderstore', 'package')
-$script:broforcetoolsGlobalFlags = @('--all-repos', '--add-repo', '--clear-cache', '--help', '-h')
-$script:createFlags = @('-t', '--template', '-n', '--name', '-a', '--author', '-o', '--output-repo', '--help', '-h')
-$script:packageFlags = @('--version', '--help', '-h')
-$script:initFlags = @('--help', '-h')
-
-function Invoke-BroforceTools {
-    param([string[]]$Arguments)
+function _bt_get_projects {
+    param([string]$Mode)
     try {
-        $output = & python $script:broforcetoolsPath @Arguments 2>$null
+        $output = python3 -m broforce_tools.completion_helper $Mode 2>$null
         if ($output) {
-            return $output -split "`n" | Where-Object { $_ -ne '' }
+            return ($output -split "`n" | Where-Object { $_ -ne '' })
         }
     } catch {}
     return @()
 }
 
-Register-ArgumentCompleter -Native -CommandName @('broforce-tools', 'broforce-tools.py', 'bt') -ScriptBlock {
+function _bt_complete_list {
+    param(
+        [string[]]$Candidates,
+        [string]$WordToComplete,
+        [string]$Type = 'ParameterValue'
+    )
+    $Candidates | Where-Object { $_ -like "$WordToComplete*" } | ForEach-Object {
+        $text = if ($_ -match '\s') { "`"$_`"" } else { $_ }
+        [System.Management.Automation.CompletionResult]::new($text, $_, $Type, $_)
+    }
+}
+
+Register-ArgumentCompleter -Native -CommandName @('broforce-tools', 'bt') -ScriptBlock {
     param($wordToComplete, $commandAst, $cursorPosition)
 
-    $tokens = $commandAst.ToString() -split '\s+'
+    $tokens = $commandAst.ToString().Substring(0, $cursorPosition) -split '\s+'
+    $tokenCount = $tokens.Count
 
-    # Find the subcommand if any
-    $subcommand = $null
-    foreach ($token in $tokens[1..($tokens.Length-1)]) {
-        if ($token -in $script:broforcetoolsCommands) {
-            $subcommand = $token
-            break
-        }
+    # If cursor is right after a space, we're completing a new (empty) token
+    $astString = $commandAst.ToString().Substring(0, $cursorPosition)
+    if ($astString.EndsWith(' ')) {
+        $wordToComplete = ''
+        $tokenCount++
     }
 
-    # Determine what to complete
-    $prevToken = if ($tokens.Length -gt 1) { $tokens[-2] } else { '' }
+    $commands = @('create', 'init-thunderstore', 'package', 'unreleased', 'changelog', 'deps')
+    $globalFlags = @('--help', '-h', '--clear-cache', '--add-repo', '--remove-repo', '--set-release-dir', '--version')
 
-    # Complete flag values
-    if ($prevToken -eq '-t' -or $prevToken -eq '--template') {
-        return Invoke-BroforceTools @('--list-templates') | Where-Object { $_ -like "$wordToComplete*" } | ForEach-Object {
-            [System.Management.Automation.CompletionResult]::new($_, $_, 'ParameterValue', $_)
-        }
+    # Position 1: complete commands and global flags
+    if ($tokenCount -le 2) {
+        _bt_complete_list -Candidates ($commands + $globalFlags) -WordToComplete $wordToComplete -Type 'ParameterName'
+        return
     }
 
-    if ($prevToken -eq '-o' -or $prevToken -eq '--output-repo' -or $prevToken -eq '--add-repo') {
-        return Invoke-BroforceTools @('--list-repos') | Where-Object { $_ -like "$wordToComplete*" } | ForEach-Object {
-            [System.Management.Automation.CompletionResult]::new($_, $_, 'ParameterValue', $_)
-        }
-    }
-
-    # Complete subcommands if none selected yet
-    if (-not $subcommand) {
-        $completions = @()
-
-        # Add subcommands
-        $completions += $script:broforcetoolsCommands | Where-Object { $_ -like "$wordToComplete*" }
-
-        # Add global flags
-        if ($wordToComplete -like '-*' -or $wordToComplete -eq '') {
-            $completions += $script:broforcetoolsGlobalFlags | Where-Object {
-                $_ -like "$wordToComplete*" -and $_ -notin $tokens
-            }
-        }
-
-        return $completions | ForEach-Object {
-            [System.Management.Automation.CompletionResult]::new($_, $_, 'ParameterName', $_)
-        }
-    }
-
-    # Complete based on subcommand
-    $completions = @()
+    $subcommand = $tokens[1]
+    $prev = $tokens[$tokenCount - 2]
 
     switch ($subcommand) {
         'create' {
-            if ($wordToComplete -like '-*') {
-                $completions = $script:createFlags | Where-Object { $_ -like "$wordToComplete*" -and $_ -notin $tokens }
-            }
-        }
-        'package' {
-            if ($wordToComplete -like '-*') {
-                $completions = $script:packageFlags | Where-Object { $_ -like "$wordToComplete*" -and $_ -notin $tokens }
-            } else {
-                $completions = Invoke-BroforceTools @('--list-projects', 'package') | Where-Object { $_ -like "$wordToComplete*" }
+            if ($prev -eq '-t' -or $prev -eq '--type') {
+                _bt_complete_list @('mod', 'bro', 'wardrobe') $wordToComplete
+            } elseif ($prev -eq '-o' -or $prev -eq '--output-repo') {
+                _bt_complete_list (_bt_get_projects 'repos') $wordToComplete
+            } elseif ($wordToComplete -like '-*') {
+                $flags = @('-t', '--type', '-n', '--name', '-a', '--author', '-o', '--output-repo',
+                           '-y', '--non-interactive', '--no-thunderstore', '--help')
+                _bt_complete_list $flags $wordToComplete 'ParameterName'
             }
         }
         'init-thunderstore' {
             if ($wordToComplete -like '-*') {
-                $completions = $script:initFlags | Where-Object { $_ -like "$wordToComplete*" -and $_ -notin $tokens }
+                $flags = @('-y', '--non-interactive', '-n', '--namespace', '-d', '--description',
+                           '-w', '--website-url', '-p', '--package-name', '--all-repos', '--help')
+                _bt_complete_list $flags $wordToComplete 'ParameterName'
             } else {
-                $completions = Invoke-BroforceTools @('--list-projects', 'init-thunderstore') | Where-Object { $_ -like "$wordToComplete*" }
+                _bt_complete_list (_bt_get_projects 'init') $wordToComplete
             }
         }
-    }
-
-    # If no completions, return current word to prevent file path fallback
-    if (-not $completions -or $completions.Count -eq 0) {
-        if ($wordToComplete) {
-            return [System.Management.Automation.CompletionResult]::new($wordToComplete, $wordToComplete, 'Text', 'No matches')
+        'package' {
+            if ($prev -eq '--version' -or $prev -eq '--package') {
+                return
+            } elseif ($wordToComplete -like '-*') {
+                $flags = @('-y', '--non-interactive', '--version', '--all-repos',
+                           '--allow-outdated-changelog', '--overwrite', '--update-deps',
+                           '--no-update-deps', '--add-missing-deps', '--no-add-missing-deps',
+                           '--keep-unreleased', '--help')
+                _bt_complete_list $flags $wordToComplete 'ParameterName'
+            } else {
+                _bt_complete_list (_bt_get_projects 'package') $wordToComplete
+            }
         }
-        return @()
-    }
-
-    return $completions | ForEach-Object {
-        $type = if ($_ -like '-*') { 'ParameterName' } else { 'ParameterValue' }
-        # Quote values with spaces
-        $completionText = if ($_ -match '\s') { "`"$_`"" } else { $_ }
-        [System.Management.Automation.CompletionResult]::new($completionText, $_, $type, $_)
+        'unreleased' {
+            if ($prev -eq '--package') {
+                _bt_complete_list (_bt_get_projects 'package') $wordToComplete
+            } elseif ($wordToComplete -like '-*') {
+                $flags = @('-y', '--non-interactive', '--all-repos', '--package-all', '--package', '--help')
+                _bt_complete_list $flags $wordToComplete 'ParameterName'
+            }
+        }
+        'deps' {
+            if ($wordToComplete -like '-*') {
+                $flags = @('-r', '--refresh', '--help')
+                _bt_complete_list $flags $wordToComplete 'ParameterName'
+            }
+        }
+        'changelog' {
+            # Position 2: complete changelog subcommands
+            if ($tokenCount -le 3) {
+                _bt_complete_list @('add', 'show', 'edit', '--help') $wordToComplete 'ParameterName'
+            } else {
+                $changelogSub = $tokens[2]
+                if ($changelogSub -in @('add', 'show', 'edit')) {
+                    if ($wordToComplete -like '-*') {
+                        $flags = @('-y', '--non-interactive', '--all-repos', '--help')
+                        _bt_complete_list $flags $wordToComplete 'ParameterName'
+                    } else {
+                        _bt_complete_list (_bt_get_projects 'package') $wordToComplete
+                    }
+                }
+            }
+        }
     }
 }

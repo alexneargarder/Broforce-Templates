@@ -7,9 +7,20 @@ Color scheme:
   WARNING (yellow) - Warnings and prompts
   FAIL (red) - Errors
 """
+import locale
 import sys
 
 _colors_initialized = False
+
+
+def _supports_unicode() -> bool:
+    """Check if the terminal likely supports unicode characters."""
+    try:
+        encoding = (getattr(sys.stdout, 'encoding', None)
+                    or locale.getpreferredencoding(False))
+        return encoding.lower().replace('-', '') == 'utf8'
+    except Exception:
+        return False
 
 
 def init_colors() -> None:
@@ -26,6 +37,13 @@ def init_colors() -> None:
             kernel32.SetConsoleMode(kernel32.GetStdHandle(-11), 7)
         except Exception:
             pass
+
+
+_unicode = _supports_unicode()
+
+CHECK = "\u2713" if _unicode else "[OK]"
+WARNING_ICON = "\u26a0\ufe0f " if _unicode else "[!] "
+ARROW = "\u2192" if _unicode else "->"
 
 
 class Colors:

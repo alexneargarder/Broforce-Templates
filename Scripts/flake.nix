@@ -21,6 +21,7 @@
             rich
             shellingham
           ]);
+
         in
         {
           default = pkgs.stdenv.mkDerivation {
@@ -95,6 +96,26 @@ WRAPPER
               platforms = platforms.linux;
               maintainers = [ ];
             };
+          };
+        });
+
+      devShells = forAllSystems (system:
+        let
+          pkgs = nixpkgs.legacyPackages.${system};
+          pythonWithDevDeps = pkgs.python3.withPackages (ps: with ps; [
+            typer
+            questionary
+            rich
+            shellingham
+            pytest
+          ]);
+        in
+        {
+          default = pkgs.mkShell {
+            packages = [ pythonWithDevDeps ];
+            shellHook = ''
+              export PYTHONPATH="$PWD/src:$PYTHONPATH"
+            '';
           };
         });
 
