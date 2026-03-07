@@ -427,6 +427,7 @@ LocalBroforcePath.props
 
 # Release DLLs
 **/_ModContent/*.dll
+!Scripts/test-fixtures/**/_ModContent/*.dll
 Releases/**/*.dll
 
 # Claude
@@ -453,5 +454,3 @@ Scripts/broforce-tools.json
 .direnv/
 Scripts/result
 
-# Test fixtures for broforce-tools
-Scripts/test-fixtures/

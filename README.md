@@ -38,7 +38,7 @@ Tool for creating projects, setting up Thunderstore metadata, and packaging mods
 ```bash
 pipx install path/to/Broforce-Templates/Scripts
 ```
-Requires Python 3.9+. After installing via pipx, run `bt` once to configure the path to your Broforce-Templates directory.
+Requires Python 3.9+. The templates directory is auto-detected from `repos_parent` config or `BROFORCE_TEMPLATES_DIR` env var.
 
 **NixOS:**
 ```nix
@@ -50,6 +50,15 @@ programs.broforce-tools.enable = true;
 ```
 
 Both methods install `bt` and `broforce-tools` commands globally.
+
+### Updating
+
+**pipx:**
+```bash
+pipx install --force path/to/Broforce-Templates/Scripts
+```
+
+**NixOS:** Rebuild after updating flake inputs.
 
 ### Running the Tool
 
@@ -83,7 +92,7 @@ Create a config file to configure repos and defaults:
 - `defaults.website_url` - Pre-filled URL for init-thunderstore
 - `repos_parent` - Parent directory containing all repos (auto-detected from Broforce-Templates location)
 - `release_dir` - Central directory to copy release zips after packaging
-- `templates_dir` - Path to Broforce-Templates repo (needed for pipx installs)
+- `templates_dir` - Path to Broforce-Templates repo (override for non-standard layouts)
 
 ### create
 

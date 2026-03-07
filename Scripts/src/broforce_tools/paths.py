@@ -46,10 +46,10 @@ def get_cache_dir() -> Path:
     """Get cache directory.
 
     Linux: XDG_CACHE_HOME/broforce-tools or ~/.cache/broforce-tools
-    Windows: System temp directory
+    Windows: System temp directory / broforce-tools
     """
     if is_windows():
-        return Path(tempfile.gettempdir())
+        return Path(tempfile.gettempdir()) / 'broforce-tools'
     else:
         xdg_cache = os.environ.get('XDG_CACHE_HOME')
         if xdg_cache:
@@ -63,7 +63,8 @@ def get_templates_dir() -> Path:
     Lookup order:
     1. BROFORCE_TEMPLATES_DIR env var (set by Nix wrapper)
     2. Script-relative path (works for in-repo execution)
-    3. Config file 'templates_dir' key (set by first-run prompt for pipx installs)
+    3. Config file 'templates_dir' key
+    4. repos_parent / 'Broforce-Templates' (derived from env var or config)
 
     Raises TemplatesDirNotFound if none found.
     """
@@ -82,9 +83,18 @@ def get_templates_dir() -> Path:
         if config_path.is_dir():
             return config_path
 
+    # Derive from repos_parent if available (covers NixOS module config + env var)
+    repos_parent = os.environ.get('BROFORCE_REPOS_PARENT')
+    if not repos_parent:
+        repos_parent = config.get('repos_parent')
+    if repos_parent:
+        candidate = Path(repos_parent).expanduser() / 'Broforce-Templates'
+        if (candidate / 'Mod Template').is_dir():
+            return candidate
+
     raise TemplatesDirNotFound(
         "Could not find Broforce-Templates directory. "
-        "Run 'bt' interactively to configure, or set BROFORCE_TEMPLATES_DIR."
+        "Set BROFORCE_TEMPLATES_DIR or configure 'repos_parent' in config."
     )
 
 
