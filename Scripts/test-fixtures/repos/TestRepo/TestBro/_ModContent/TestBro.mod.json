@@ -1,0 +1,12 @@
+{
+  "Version": "1.0.0",
+  "BroMakerVersion": "2.6.2",
+  "Name": "TestBro",
+  "Author": "TestAuthor",
+  "CustomBros": [
+    "TestBro.json"
+  ],
+  "Assemblies": [
+    "TestBro.dll"
+  ]
+}

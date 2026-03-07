@@ -1,0 +1,8 @@
+{
+  "name": "OtherMod",
+  "author": "TestAuthor",
+  "version_number": "2.0.0",
+  "website_url": "https://example.com",
+  "description": "Another mod for multi-repo testing",
+  "dependencies": ["UMM-UMM-1.0.1"]
+}

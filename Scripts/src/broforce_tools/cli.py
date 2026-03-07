@@ -1,4 +1,5 @@
 """CLI application using Typer."""
+import click.exceptions
 import filecmp
 import json
 import os
@@ -7,7 +8,7 @@ import shutil
 import tempfile
 import time
 import zipfile
-from typing import Optional
+from typing import NoReturn, Optional
 
 import questionary
 import typer
@@ -123,6 +124,23 @@ def check_missing_required(missing: list[tuple[str, str]]) -> None:
         raise typer.Exit(1)
 
 
+def _run_batch(projects: list[tuple[str, str]], action, **kwargs) -> None:
+    """Run an action on multiple projects, continuing on failure."""
+    failures = []
+    for project_name, repo in projects:
+        if len(projects) > 1:
+            print(f"\n{Colors.HEADER}{'='*50}{Colors.ENDC}")
+        try:
+            action(project_name, **kwargs)
+        except (SystemExit, click.exceptions.Exit):
+            failures.append(project_name)
+        except Exception as e:
+            print(f"{Colors.FAIL}Error: {e}{Colors.ENDC}")
+            failures.append(project_name)
+    if failures:
+        print(f"\n{Colors.WARNING}{len(failures)} project(s) failed: {', '.join(failures)}{Colors.ENDC}")
+
+
 def select_projects_interactive(
     repos_parent: str,
     mode: str,
@@ -199,7 +217,9 @@ def do_init_thunderstore(
 
     template_dir = get_templates_dir()
 
-    repos = [d for d in os.listdir(repos_parent) if os.path.isdir(os.path.join(repos_parent, d))]
+    repos = get_configured_repos()
+    if not repos:
+        repos = [d for d in os.listdir(repos_parent) if os.path.isdir(os.path.join(repos_parent, d))]
 
     project_path = None
     releases_path = None
@@ -442,7 +462,9 @@ def do_package(
     """Create Thunderstore package for an existing project."""
     template_dir = get_templates_dir()
 
-    repos = [d for d in os.listdir(repos_parent) if os.path.isdir(os.path.join(repos_parent, d))]
+    repos = get_configured_repos()
+    if not repos:
+        repos = [d for d in os.listdir(repos_parent) if os.path.isdir(os.path.join(repos_parent, d))]
     project_path = None
     releases_path = None
     output_repo = None
@@ -529,7 +551,7 @@ def do_package(
         versions = {
             changelog_name: changelog_version,
             'manifest.json': manifest_version,
-            type_info.get("version_file_label", "metadata"): info_version
+            (type_info.get("version_file_label") or "metadata"): info_version
         }
 
         valid_versions = {k: v for k, v in versions.items() if v is not None}
@@ -920,6 +942,10 @@ def do_create_project(
         template_type = choice.lower()
 
     type_info = PROJECT_TYPES.get(template_type) if template_type else None
+    if template_type and not type_info:
+        print(f"{Colors.FAIL}Error: Invalid project type '{template_type}'{Colors.ENDC}")
+        print(f"Valid types: {', '.join(get_type_names())}")
+        raise typer.Exit(1)
     if type_info:
         source_template_name = type_info["template_dir_name"]
     else:
@@ -1096,10 +1122,134 @@ def do_create_project(
                     print(f"  2. Replace placeholder.png with your sprite")
                     print(f"  3. Run 'bt init-thunderstore' when ready to publish")
 
+    except (SystemExit, click.exceptions.Exit):
+        raise
     except Exception as e:
         print(f"{Colors.FAIL}Error: Failed during file processing: {e}{Colors.ENDC}")
         import traceback
         traceback.print_exc()
+        if os.path.exists(newReleaseFolder):
+            shutil.rmtree(newReleaseFolder)
+        if os.path.exists(newRepoPath):
+            shutil.rmtree(newRepoPath)
+        raise typer.Exit(1)
+
+
+def _select_project_for_changelog(repos_parent: str) -> Optional[tuple[str, str, str]]:
+    """Interactive project selection for changelog commands.
+
+    Returns (project_name, releases_path, changelog_path) or None if cancelled.
+    """
+    repos, _ = get_repos_to_search(repos_parent, use_all_repos=False)
+    if not repos:
+        print(f"{Colors.FAIL}Error: No repos configured. Use --add-repo to add repos.{Colors.ENDC}")
+        return None
+
+    projects = find_projects(repos_parent, repos, require_metadata=True)
+    if not projects:
+        print(f"{Colors.FAIL}Error: No projects with Thunderstore metadata found.{Colors.ENDC}")
+        return None
+
+    if len(projects) == 1:
+        project_name, repo = projects[0]
+        print(f"{Colors.CYAN}Using project: {project_name}{Colors.ENDC}")
+    else:
+        choices = [f"{name} ({repo})" for name, repo in projects]
+        selection = questionary.select("Select project:", choices=choices).ask()
+        if not selection:
+            return None
+        project_name = selection.rsplit(' (', 1)[0]
+        repo = None
+        for p in projects:
+            if p[0] == project_name:
+                repo = p[1]
+                break
+        if not repo:
+            return None
+
+    releases_path = get_releases_path(repos_parent, repo, project_name, create=False)
+    if not releases_path:
+        print(f"{Colors.FAIL}Error: Could not find releases path for '{project_name}'{Colors.ENDC}")
+        return None
+
+    changelog_path = find_changelog(releases_path)
+    if not changelog_path:
+        print(f"{Colors.FAIL}Error: No changelog found for '{project_name}'{Colors.ENDC}")
+        return None
+
+    return project_name, releases_path, changelog_path
+
+
+def _interactive_changelog_show(repos_parent: str) -> None:
+    """Show changelog entries via interactive project selection."""
+    result = _select_project_for_changelog(repos_parent)
+    if not result:
+        raise typer.Exit()
+
+    project_name, _, changelog_path = result
+    version, is_unreleased, entries = get_latest_version_entries(changelog_path)
+    if not version:
+        print(f"{Colors.CYAN}{project_name}: No versions found in changelog{Colors.ENDC}")
+        raise typer.Exit()
+
+    status = "(unreleased)" if is_unreleased else "(released)"
+    print(f"{Colors.HEADER}{project_name} - v{version} {status}:{Colors.ENDC}")
+    if entries:
+        for entry in entries:
+            print(f"  {entry}")
+    else:
+        print(f"  {Colors.CYAN}(no entries){Colors.ENDC}")
+
+
+def _interactive_changelog_add(repos_parent: str) -> None:
+    """Add a changelog entry via interactive prompts."""
+    message = questionary.text("Enter changelog entry:").ask()
+    if not message:
+        raise typer.Exit()
+
+    result = _select_project_for_changelog(repos_parent)
+    if not result:
+        raise typer.Exit()
+
+    project_name, _, changelog_path = result
+
+    is_unreleased, version = has_unreleased_version(changelog_path)
+    if not is_unreleased:
+        print(f"{Colors.FAIL}Error: No unreleased version found in changelog{Colors.ENDC}")
+        print(f"Add a version header like: ## v1.0.0 (unreleased)")
+        raise typer.Exit(1)
+
+    if add_changelog_entry(changelog_path, message):
+        print(f"{Colors.GREEN}Added to {project_name} v{version}:{Colors.ENDC}")
+        print(f"  - {message}")
+    else:
+        print(f"{Colors.FAIL}Error: Failed to add changelog entry{Colors.ENDC}")
+        raise typer.Exit(1)
+
+
+def _interactive_changelog_edit(repos_parent: str) -> None:
+    """Open a changelog in an editor via interactive project selection."""
+    import shlex
+    import subprocess
+
+    result = _select_project_for_changelog(repos_parent)
+    if not result:
+        raise typer.Exit()
+
+    _, _, changelog_path = result
+
+    editor = os.environ.get('EDITOR', os.environ.get('VISUAL', 'nano'))
+    print(f"{Colors.CYAN}Opening {changelog_path} in {editor}...{Colors.ENDC}")
+
+    try:
+        editor_cmd = shlex.split(editor) + [changelog_path]
+        subprocess.run(editor_cmd, check=True)
+    except FileNotFoundError:
+        print(f"{Colors.FAIL}Error: Editor '{editor.split()[0]}' not found{Colors.ENDC}")
+        print(f"Set the EDITOR environment variable to your preferred editor")
+        raise typer.Exit(1)
+    except subprocess.CalledProcessError as e:
+        print(f"{Colors.FAIL}Error: Editor exited with code {e.returncode}{Colors.ENDC}")
         raise typer.Exit(1)
 
 
@@ -1109,25 +1259,14 @@ def _version_callback(value: bool):
         raise typer.Exit()
 
 
-def _handle_templates_not_found() -> None:
-    """Prompt user for templates dir on first pipx run and save to config."""
-    print(f"{Colors.WARNING}Could not find Broforce-Templates directory.{Colors.ENDC}")
-    print(f"{Colors.CYAN}This is needed for project creation and template operations.{Colors.ENDC}\n")
-    path = questionary.text(
-        "Enter path to Broforce-Templates repo:",
-        validate=lambda text: True if os.path.isdir(text) and os.path.isdir(os.path.join(text, 'Mod Template')) else "Directory must exist and contain 'Mod Template' folder"
-    ).ask()
-    if not path:
-        raise typer.Exit(1)
-    config = load_config()
-    config['templates_dir'] = path
-    if 'repos_parent' not in config:
-        config['repos_parent'] = os.path.dirname(os.path.abspath(path))
-    if save_config(config):
-        print(f"{Colors.GREEN}Saved templates_dir to config{Colors.ENDC}")
-    else:
-        print(f"{Colors.FAIL}Error: Failed to save config{Colors.ENDC}")
-        raise typer.Exit(1)
+def _handle_templates_not_found() -> NoReturn:
+    """Print helpful error when Broforce-Templates directory cannot be found."""
+    print(f"{Colors.FAIL}Error: Could not find Broforce-Templates directory.{Colors.ENDC}")
+    print(f"\n{Colors.CYAN}Set one of the following:{Colors.ENDC}")
+    print(f"  - BROFORCE_TEMPLATES_DIR environment variable")
+    print(f"  - 'repos_parent' in config (Broforce-Templates must be inside it)")
+    print(f"  - 'templates_dir' in config")
+    raise typer.Exit(1)
 
 
 @app.callback(invoke_without_command=True)
@@ -1146,7 +1285,6 @@ def main_callback(
         repos_parent = str(get_repos_parent())
     except TemplatesDirNotFound:
         _handle_templates_not_found()
-        repos_parent = str(get_repos_parent())
 
     if clear_cache_flag:
         cache_file = get_cache_file()
@@ -1260,20 +1398,14 @@ def main_callback(
             selected = select_projects_interactive(repos_parent, 'init', use_all_repos=False)
             if not selected:
                 raise typer.Exit()
-            for project_name, repo in selected:
-                if len(selected) > 1:
-                    print(f"\n{Colors.HEADER}{'='*50}{Colors.ENDC}")
-                do_init_thunderstore(project_name, repos_parent)
+            _run_batch(selected, do_init_thunderstore, repos_parent=repos_parent)
         elif choice == "Package for releasing on Thunderstore":
             selected = select_projects_interactive(repos_parent, 'package', use_all_repos=False)
             if not selected:
                 raise typer.Exit()
-            for project_name, repo in selected:
-                if len(selected) > 1:
-                    print(f"\n{Colors.HEADER}{'='*50}{Colors.ENDC}")
-                do_package(project_name, repos_parent, None)
+            _run_batch(selected, do_package, repos_parent=repos_parent)
         elif choice == "View/package unreleased projects":
-            ctx.invoke(unreleased)
+            unreleased(all_repos=False, non_interactive=False, package_all=False, package=None)
         elif choice == "Manage changelogs":
             sub = questionary.select(
                 "Changelog action:",
@@ -1282,13 +1414,13 @@ def main_callback(
             if not sub:
                 raise typer.Exit()
             if sub == "Add entry":
-                ctx.invoke(changelog_add)
+                _interactive_changelog_add(repos_parent)
             elif sub == "Show entries":
-                ctx.invoke(changelog_show)
+                _interactive_changelog_show(repos_parent)
             elif sub == "Edit in editor":
-                ctx.invoke(changelog_edit)
+                _interactive_changelog_edit(repos_parent)
         elif choice == "Show dependency versions":
-            ctx.invoke(deps)
+            deps(refresh=False)
 
 
 @app.command()
@@ -1337,17 +1469,15 @@ def init_thunderstore_cmd(
         selected = select_projects_interactive(repos_parent, 'init', use_all_repos=all_repos)
         if not selected:
             raise typer.Exit()
-        for proj_name, _ in selected:
-            if len(selected) > 1:
-                print(f"\n{Colors.HEADER}{'='*50}{Colors.ENDC}")
-            do_init_thunderstore(
-                proj_name, repos_parent,
-                namespace=namespace,
-                description=description,
-                website_url=website_url,
-                package_name_override=package_name,
-                non_interactive=non_interactive,
-            )
+        _run_batch(
+            selected, do_init_thunderstore,
+            repos_parent=repos_parent,
+            namespace=namespace,
+            description=description,
+            website_url=website_url,
+            package_name_override=package_name,
+            non_interactive=non_interactive,
+        )
 
 
 @app.command()
@@ -1385,18 +1515,17 @@ def package(
         selected = select_projects_interactive(repos_parent, 'package', use_all_repos=all_repos)
         if not selected:
             raise typer.Exit()
-        for proj_name, _ in selected:
-            if len(selected) > 1:
-                print(f"\n{Colors.HEADER}{'='*50}{Colors.ENDC}")
-            do_package(
-                proj_name, repos_parent, version,
-                non_interactive=non_interactive,
-                allow_outdated_changelog=allow_outdated_changelog,
-                overwrite=overwrite,
-                update_deps=update_deps,
-                add_missing_deps=add_missing_deps,
-                keep_unreleased=keep_unreleased,
-            )
+        _run_batch(
+            selected, do_package,
+            repos_parent=repos_parent,
+            version_override=version,
+            non_interactive=non_interactive,
+            allow_outdated_changelog=allow_outdated_changelog,
+            overwrite=overwrite,
+            update_deps=update_deps,
+            add_missing_deps=add_missing_deps,
+            keep_unreleased=keep_unreleased,
+        )
 
 
 @app.command()
@@ -1467,23 +1596,21 @@ def unreleased(
         print_unreleased_list(False)
 
         if package_all:
-            # Package all unreleased
-            for project_name, repo in all_unreleased:
-                print(f"\n{Colors.HEADER}{'='*50}{Colors.ENDC}")
-                do_package(project_name, repos_parent, None, non_interactive=True)
+            _run_batch(all_unreleased, do_package, repos_parent=repos_parent, non_interactive=True)
         elif package:
-            # Package specified projects
+            # Filter to specified projects
             project_names = {name for name, repo in all_unreleased}
+            to_package = []
             for proj in package:
                 if proj not in project_names:
                     print(f"{Colors.WARNING}Warning: '{proj}' not found in unreleased projects, skipping{Colors.ENDC}")
                     continue
-                # Find the repo for this project
                 for p_name, p_repo in all_unreleased:
                     if p_name == proj:
-                        print(f"\n{Colors.HEADER}{'='*50}{Colors.ENDC}")
-                        do_package(proj, repos_parent, None, non_interactive=True)
+                        to_package.append((p_name, p_repo))
                         break
+            if to_package:
+                _run_batch(to_package, do_package, repos_parent=repos_parent, non_interactive=True)
         # If just -y with no --package-all or --package, just list (already printed above)
         return
 
@@ -1515,9 +1642,7 @@ def unreleased(
         break
 
     if selection.startswith("Package all"):
-        for project_name, repo in all_unreleased:
-            print(f"\n{Colors.HEADER}{'='*50}{Colors.ENDC}")
-            do_package(project_name, repos_parent, None)
+        _run_batch(all_unreleased, do_package, repos_parent=repos_parent)
     else:
         if is_single_repo:
             project_choices = [name for name, _ in all_unreleased]
@@ -1533,20 +1658,18 @@ def unreleased(
             print(f"{Colors.CYAN}No projects selected.{Colors.ENDC}")
             raise typer.Exit()
 
+        to_package = []
         for sel in selected:
             if is_single_repo:
-                project_name = sel
-                proj_repo = repos[0]
+                to_package.append((sel, repos[0]))
             else:
-                project_name = sel.rsplit(' (', 1)[0]
-                proj_repo = None
+                proj_name = sel.rsplit(' (', 1)[0]
                 for p_name, p_repo in all_unreleased:
-                    if p_name == project_name:
-                        proj_repo = p_repo
+                    if p_name == proj_name:
+                        to_package.append((p_name, p_repo))
                         break
 
-            print(f"\n{Colors.HEADER}{'='*50}{Colors.ENDC}")
-            do_package(project_name, repos_parent, None)
+        _run_batch(to_package, do_package, repos_parent=repos_parent)
 
 
 @app.command()
@@ -1626,6 +1749,13 @@ def changelog_add(
     init_colors()
     repos_parent = str(get_repos_parent())
 
+    if not isinstance(arg1, str):
+        arg1 = None
+    if not isinstance(arg2, str):
+        arg2 = None
+    if not isinstance(non_interactive, bool):
+        non_interactive = False
+
     # Handle missing arguments
     if arg1 is None:
         if non_interactive:
@@ -1666,10 +1796,14 @@ def changelog_add(
             if not selection:
                 raise typer.Exit()
             project_name = selection.rsplit(' (', 1)[0]
+            repo = None
             for p in projects:
                 if p[0] == project_name:
                     repo = p[1]
                     break
+            if not repo:
+                print(f"{Colors.FAIL}Error: Could not find project '{project_name}'{Colors.ENDC}")
+                raise typer.Exit(1)
     else:
         project_name = arg1
         message = arg2
@@ -1723,6 +1857,9 @@ def changelog_edit(
     init_colors()
     repos_parent = str(get_repos_parent())
 
+    if not isinstance(project_name, str):
+        project_name = None
+
     if project_name:
         repo = None
         for r in os.listdir(repos_parent):
@@ -1761,10 +1898,14 @@ def changelog_edit(
             if not selection:
                 raise typer.Exit()
             project_name = selection.rsplit(' (', 1)[0]
+            repo = None
             for p in projects:
                 if p[0] == project_name:
                     repo = p[1]
                     break
+            if not repo:
+                print(f"{Colors.FAIL}Error: Could not find project '{project_name}'{Colors.ENDC}")
+                raise typer.Exit(1)
 
     releases_path = get_releases_path(repos_parent, repo, project_name, create=False)
     if not releases_path:
@@ -1806,6 +1947,9 @@ def changelog_show(
     """Show the latest changelog entries for a project."""
     init_colors()
     repos_parent = str(get_repos_parent())
+
+    if not isinstance(project_name, str):
+        project_name = None
 
     if project_name:
         repo = None

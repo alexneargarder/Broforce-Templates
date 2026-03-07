@@ -1,0 +1,7 @@
+{
+  "repos": ["TestRepo", "AnotherRepo"],
+  "defaults": {
+    "namespace": "TestAuthor",
+    "website_url": "https://example.com"
+  }
+}

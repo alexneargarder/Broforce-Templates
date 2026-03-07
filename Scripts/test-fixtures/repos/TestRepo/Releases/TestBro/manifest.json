@@ -1,0 +1,11 @@
+{
+  "name": "TestBro",
+  "author": "TestAuthor",
+  "version_number": "1.0.0",
+  "website_url": "https://example.com",
+  "description": "A test bro for testing",
+  "dependencies": [
+    "UMM-UMM-1.1.0",
+    "BroMaker-BroMaker-2.6.2"
+  ]
+}

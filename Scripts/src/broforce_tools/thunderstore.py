@@ -128,7 +128,7 @@ def detect_dependencies_from_csproj(project_path: str) -> list[str]:
 
     csproj_files = []
     for root, dirs, files in os.walk(project_path):
-        depth = root.replace(project_path, '').count(os.sep)
+        depth = root[len(project_path):].count(os.sep)
         if depth > 2:
             continue
         for file in files:

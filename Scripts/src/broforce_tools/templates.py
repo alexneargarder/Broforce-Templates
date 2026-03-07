@@ -284,7 +284,6 @@ def detect_current_repo(repos_parent: str) -> Optional[str]:
         elif cwd_abs_alt and repos_abs_alt and cwd_abs_alt.startswith(repos_abs_alt):
             is_inside = True
             rel_path_lower = cwd_abs_alt[len(repos_abs_alt):].lstrip('/')
-            rel_path_original = cwd_original[len(repos_original):].lstrip('/')
 
         if not is_inside or not rel_path_lower:
             return None
@@ -317,7 +316,7 @@ def _is_project_dir(path: str, max_depth: int = 2) -> bool:
     patterns = get_all_metadata_patterns() + ["*.csproj"]
     try:
         for root, dirs, files in os.walk(path):
-            depth = root.replace(path, '').count(os.sep)
+            depth = root[len(path):].count(os.sep)
             if depth > max_depth:
                 dirs.clear()
                 continue
