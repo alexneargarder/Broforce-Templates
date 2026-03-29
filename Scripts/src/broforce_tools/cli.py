@@ -1238,7 +1238,8 @@ def _interactive_changelog_edit(repos_parent: str) -> None:
 
     _, _, changelog_path = result
 
-    editor = os.environ.get('EDITOR', os.environ.get('VISUAL', 'nano'))
+    fallback = 'notepad' if is_windows() else 'nano'
+    editor = os.environ.get('EDITOR', os.environ.get('VISUAL', fallback))
     print(f"{Colors.CYAN}Opening {changelog_path} in {editor}...{Colors.ENDC}")
 
     try:
@@ -1848,7 +1849,8 @@ def changelog_edit(
         print(f"{Colors.FAIL}Error: No changelog found for '{project_name}'{Colors.ENDC}")
         raise typer.Exit(1)
 
-    editor = os.environ.get('EDITOR', os.environ.get('VISUAL', 'nano'))
+    fallback = 'notepad' if is_windows() else 'nano'
+    editor = os.environ.get('EDITOR', os.environ.get('VISUAL', fallback))
     print(f"{Colors.CYAN}Opening {changelog_path} in {editor}...{Colors.ENDC}")
 
     import shlex
@@ -2044,10 +2046,8 @@ def config_edit():
         config_file.write_text('{\n  "repos": []\n}\n')
         print(f"{Colors.GREEN}Created config file: {config_file}{Colors.ENDC}")
 
-    if is_windows():
-        editor = os.environ.get('EDITOR', os.environ.get('VISUAL', 'notepad'))
-    else:
-        editor = os.environ.get('EDITOR', os.environ.get('VISUAL', 'nano'))
+    fallback = 'notepad' if is_windows() else 'nano'
+    editor = os.environ.get('EDITOR', os.environ.get('VISUAL', fallback))
     print(f"{Colors.CYAN}Opening {config_file} in {editor}...{Colors.ENDC}")
     try:
         editor_cmd = shlex.split(editor) + [str(config_file)]
