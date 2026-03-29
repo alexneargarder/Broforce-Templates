@@ -16,8 +16,8 @@ import typer
 from . import __version__
 from .colors import Colors, init_colors, CHECK, WARNING_ICON, ARROW
 from .paths import TemplatesDirNotFound
-from .config import get_configured_repos, get_release_dir, load_config, save_config, get_defaults
-from .paths import get_repos_parent, get_templates_dir, get_cache_dir
+from .config import get_config_file, get_configured_repos, get_nix_config_file, get_release_dir, load_config, save_config, get_defaults
+from .paths import get_repos_parent, get_templates_dir, get_config_dir, is_windows
 from .project_types import PROJECT_TYPES, get_type_names, get_display_names
 from .templates import (
     copyanything,
@@ -150,7 +150,7 @@ def select_projects_interactive(
     """Interactive project selection for commands."""
     repos, is_single_repo = get_repos_to_search(repos_parent, use_all_repos)
     if not repos:
-        print(f"{Colors.FAIL}Error: No repos configured. Use --add-repo to add repos.{Colors.ENDC}")
+        print(f"{Colors.FAIL}Error: No repos configured. Use 'bt config add-repo' to add repos.{Colors.ENDC}")
         return []
 
     if mode == 'package':
@@ -1142,7 +1142,7 @@ def _select_project_for_changelog(repos_parent: str) -> Optional[tuple[str, str,
     """
     repos, _ = get_repos_to_search(repos_parent, use_all_repos=False)
     if not repos:
-        print(f"{Colors.FAIL}Error: No repos configured. Use --add-repo to add repos.{Colors.ENDC}")
+        print(f"{Colors.FAIL}Error: No repos configured. Use 'bt config add-repo' to add repos.{Colors.ENDC}")
         return None
 
     projects = find_projects(repos_parent, repos, require_metadata=True)
@@ -1262,10 +1262,10 @@ def _version_callback(value: bool):
 def _handle_templates_not_found() -> NoReturn:
     """Print helpful error when Broforce-Templates directory cannot be found."""
     print(f"{Colors.FAIL}Error: Could not find Broforce-Templates directory.{Colors.ENDC}")
-    print(f"\n{Colors.CYAN}Set one of the following:{Colors.ENDC}")
-    print(f"  - BROFORCE_TEMPLATES_DIR environment variable")
-    print(f"  - 'repos_parent' in config (Broforce-Templates must be inside it)")
-    print(f"  - 'templates_dir' in config")
+    print(f"\n{Colors.CYAN}To configure:{Colors.ENDC}")
+    print(f"  bt config init                         Interactive setup")
+    print(f"  bt config set repos_parent <path>      Set repos directory")
+    print(f"  BROFORCE_TEMPLATES_DIR=<path> bt ...    Environment variable")
     raise typer.Exit(1)
 
 
@@ -1274,17 +1274,9 @@ def main_callback(
     ctx: typer.Context,
     version: bool = typer.Option(False, "--version", callback=_version_callback, is_eager=True, help="Show version"),
     clear_cache_flag: bool = typer.Option(False, "--clear-cache", help="Clear dependency version cache"),
-    add_repo: Optional[str] = typer.Option(None, "--add-repo", help="Add repo to config (uses current if empty string)", autocompletion=_complete_none),
-    remove_repo: Optional[str] = typer.Option(None, "--remove-repo", help="Remove repo from config", autocompletion=_complete_repos),
-    set_release_dir: Optional[str] = typer.Option(None, "--set-release-dir", help="Set central directory for release zip copies (empty string to clear)", autocompletion=_complete_none),
 ):
     """Tool for creating Broforce mods and packaging for Thunderstore."""
     init_colors()
-
-    try:
-        repos_parent = str(get_repos_parent())
-    except TemplatesDirNotFound:
-        _handle_templates_not_found()
 
     if clear_cache_flag:
         cache_file = get_cache_file()
@@ -1298,129 +1290,68 @@ def main_callback(
             print(f"{Colors.BLUE}Cache file does not exist: {cache_file}{Colors.ENDC}")
         raise typer.Exit()
 
-    if add_repo is not None:
-        if add_repo == '':
-            repo_name = detect_current_repo(repos_parent)
-            if not repo_name:
-                print(f"{Colors.FAIL}Error: Could not detect current repo from working directory{Colors.ENDC}")
-                print(f"Run from within a repo directory, or specify repo name: --add-repo RepoName")
-                raise typer.Exit(1)
-        else:
-            repo_name = add_repo
+    if ctx.invoked_subcommand is not None:
+        return
 
-        config = load_config()
-        repos = config.get('repos', [])
+    # Interactive menu - needs repos_parent
+    try:
+        repos_parent = str(get_repos_parent())
+    except TemplatesDirNotFound:
+        _handle_templates_not_found()
 
-        if repo_name in repos:
-            print(f"{Colors.BLUE}'{repo_name}' is already in configured repos{Colors.ENDC}")
-        else:
-            repos.append(repo_name)
-            config['repos'] = repos
-            if save_config(config):
-                print(f"{Colors.GREEN}Added '{repo_name}' to configured repos{Colors.ENDC}")
-            else:
-                print(f"{Colors.FAIL}Error: Failed to save config file{Colors.ENDC}")
-                raise typer.Exit(1)
+    print(f"{Colors.HEADER}Broforce Mod Tools{Colors.ENDC}\n")
 
-        print(f"\n{Colors.CYAN}Configured repos:{Colors.ENDC}")
-        for r in repos:
-            print(f"  - {r}")
+    choice = questionary.select(
+        "What would you like to do?",
+        choices=[
+            f"Create new {' / '.join(get_type_names())} project",
+            "Setup Thunderstore metadata for an existing project",
+            "Package for releasing on Thunderstore",
+            "View/package unreleased projects",
+            "Manage changelogs",
+            "Manage configuration",
+            "Show dependency versions",
+            "Show help"
+        ]
+    ).ask()
+
+    if not choice:
         raise typer.Exit()
 
-    if remove_repo is not None:
-        config = load_config()
-        repos = config.get('repos', [])
-
-        if remove_repo in repos:
-            repos.remove(remove_repo)
-            config['repos'] = repos
-            if save_config(config):
-                print(f"{Colors.GREEN}Removed '{remove_repo}' from configured repos{Colors.ENDC}")
-            else:
-                print(f"{Colors.FAIL}Error: Failed to save config file{Colors.ENDC}")
-                raise typer.Exit(1)
-        else:
-            print(f"{Colors.WARNING}'{remove_repo}' is not in configured repos{Colors.ENDC}")
-
-        print(f"\n{Colors.CYAN}Configured repos:{Colors.ENDC}")
-        for r in repos:
-            print(f"  - {r}")
+    if choice == "Show help":
+        print(ctx.get_help())
         raise typer.Exit()
-
-    if set_release_dir is not None:
-        config = load_config()
-        if set_release_dir == '':
-            if 'release_dir' in config:
-                del config['release_dir']
-                if save_config(config):
-                    print(f"{Colors.GREEN}Cleared release_dir setting{Colors.ENDC}")
-                else:
-                    print(f"{Colors.FAIL}Error: Failed to save config file{Colors.ENDC}")
-                    raise typer.Exit(1)
-            else:
-                print(f"{Colors.BLUE}release_dir is not set{Colors.ENDC}")
-        else:
-            expanded = os.path.expanduser(set_release_dir)
-            config['release_dir'] = set_release_dir
-            if save_config(config):
-                print(f"{Colors.GREEN}Set release_dir to: {set_release_dir}{Colors.ENDC}")
-                print(f"{Colors.CYAN}Expands to: {expanded}{Colors.ENDC}")
-            else:
-                print(f"{Colors.FAIL}Error: Failed to save config file{Colors.ENDC}")
-                raise typer.Exit(1)
-        raise typer.Exit()
-
-    if ctx.invoked_subcommand is None:
-        print(f"{Colors.HEADER}Broforce Mod Tools{Colors.ENDC}\n")
-
-        choice = questionary.select(
-            "What would you like to do?",
-            choices=[
-                f"Create new {' / '.join(get_type_names())} project",
-                "Setup Thunderstore metadata for an existing project",
-                "Package for releasing on Thunderstore",
-                "View/package unreleased projects",
-                "Manage changelogs",
-                "Show dependency versions",
-                "Show help"
-            ]
+    elif choice.startswith("Create new"):
+        do_create_project(None, None, None, None)
+    elif choice == "Setup Thunderstore metadata for an existing project":
+        selected = select_projects_interactive(repos_parent, 'init', use_all_repos=False)
+        if not selected:
+            raise typer.Exit()
+        _run_batch(selected, do_init_thunderstore, repos_parent=repos_parent)
+    elif choice == "Package for releasing on Thunderstore":
+        selected = select_projects_interactive(repos_parent, 'package', use_all_repos=False)
+        if not selected:
+            raise typer.Exit()
+        _run_batch(selected, do_package, repos_parent=repos_parent)
+    elif choice == "View/package unreleased projects":
+        unreleased(all_repos=False, non_interactive=False, package_all=False, package=None)
+    elif choice == "Manage changelogs":
+        sub = questionary.select(
+            "Changelog action:",
+            choices=["Add entry", "Show entries", "Edit in editor"]
         ).ask()
-
-        if not choice:
+        if not sub:
             raise typer.Exit()
-
-        if choice == "Show help":
-            print(ctx.get_help())
-            raise typer.Exit()
-        elif choice.startswith("Create new"):
-            do_create_project(None, None, None, None)
-        elif choice == "Setup Thunderstore metadata for an existing project":
-            selected = select_projects_interactive(repos_parent, 'init', use_all_repos=False)
-            if not selected:
-                raise typer.Exit()
-            _run_batch(selected, do_init_thunderstore, repos_parent=repos_parent)
-        elif choice == "Package for releasing on Thunderstore":
-            selected = select_projects_interactive(repos_parent, 'package', use_all_repos=False)
-            if not selected:
-                raise typer.Exit()
-            _run_batch(selected, do_package, repos_parent=repos_parent)
-        elif choice == "View/package unreleased projects":
-            unreleased(all_repos=False, non_interactive=False, package_all=False, package=None)
-        elif choice == "Manage changelogs":
-            sub = questionary.select(
-                "Changelog action:",
-                choices=["Add entry", "Show entries", "Edit in editor"]
-            ).ask()
-            if not sub:
-                raise typer.Exit()
-            if sub == "Add entry":
-                _interactive_changelog_add(repos_parent)
-            elif sub == "Show entries":
-                _interactive_changelog_show(repos_parent)
-            elif sub == "Edit in editor":
-                _interactive_changelog_edit(repos_parent)
-        elif choice == "Show dependency versions":
-            deps(refresh=False)
+        if sub == "Add entry":
+            _interactive_changelog_add(repos_parent)
+        elif sub == "Show entries":
+            _interactive_changelog_show(repos_parent)
+        elif sub == "Edit in editor":
+            _interactive_changelog_edit(repos_parent)
+    elif choice == "Manage configuration":
+        _interactive_config(repos_parent)
+    elif choice == "Show dependency versions":
+        deps(refresh=False)
 
 
 @app.command()
@@ -1541,7 +1472,7 @@ def unreleased(
 
     repos, is_single_repo = get_repos_to_search(repos_parent, all_repos)
     if not repos:
-        print(f"{Colors.FAIL}Error: No repos configured. Use --add-repo to add repos.{Colors.ENDC}")
+        print(f"{Colors.FAIL}Error: No repos configured. Use 'bt config add-repo' to add repos.{Colors.ENDC}")
         raise typer.Exit(1)
 
     projects = find_projects(repos_parent, repos, require_metadata=True)
@@ -1772,7 +1703,7 @@ def changelog_add(
         message = arg1
         repos, _ = get_repos_to_search(repos_parent, all_repos)
         if not repos:
-            print(f"{Colors.FAIL}Error: No repos configured. Use --add-repo to add repos.{Colors.ENDC}")
+            print(f"{Colors.FAIL}Error: No repos configured. Use 'bt config add-repo' to add repos.{Colors.ENDC}")
             raise typer.Exit(1)
 
         projects = find_projects(repos_parent, repos, require_metadata=True)
@@ -1875,7 +1806,7 @@ def changelog_edit(
     else:
         repos, _ = get_repos_to_search(repos_parent, all_repos)
         if not repos:
-            print(f"{Colors.FAIL}Error: No repos configured. Use --add-repo to add repos.{Colors.ENDC}")
+            print(f"{Colors.FAIL}Error: No repos configured. Use 'bt config add-repo' to add repos.{Colors.ENDC}")
             raise typer.Exit(1)
 
         projects = find_projects(repos_parent, repos, require_metadata=True)
@@ -1966,7 +1897,7 @@ def changelog_show(
     else:
         repos, _ = get_repos_to_search(repos_parent, all_repos)
         if not repos:
-            print(f"{Colors.FAIL}Error: No repos configured. Use --add-repo to add repos.{Colors.ENDC}")
+            print(f"{Colors.FAIL}Error: No repos configured. Use 'bt config add-repo' to add repos.{Colors.ENDC}")
             raise typer.Exit(1)
 
         projects = find_projects(repos_parent, repos, require_metadata=True)
@@ -2033,6 +1964,332 @@ def changelog_show(
             print(f"  {entry}")
     else:
         print(f"  {Colors.CYAN}(no entries){Colors.ENDC}")
+
+
+# =============================================================================
+# Config commands
+# =============================================================================
+
+config_app = typer.Typer(help="Manage broforce-tools configuration", invoke_without_command=True)
+app.add_typer(config_app, name="config")
+
+
+@config_app.callback()
+def config_callback(ctx: typer.Context):
+    """Manage broforce-tools configuration."""
+    if ctx.invoked_subcommand is not None:
+        return
+    init_colors()
+    try:
+        repos_parent = str(get_repos_parent())
+    except TemplatesDirNotFound:
+        repos_parent = None
+    _interactive_config(repos_parent)
+    raise typer.Exit()
+
+
+CONFIG_SETTABLE_KEYS = {
+    'repos_parent': 'Parent directory containing all repos',
+    'release_dir': 'Central directory for release zip copies',
+    'templates_dir': 'Path to Broforce-Templates directory',
+    'defaults.namespace': 'Default Thunderstore namespace/author',
+    'defaults.website_url': 'Default website URL for Thunderstore packages',
+}
+
+
+@config_app.command("show")
+def config_show():
+    """Print current config file path and contents."""
+    init_colors()
+    nix_file = get_nix_config_file()
+    user_file = get_config_file()
+    has_nix = nix_file.exists()
+    has_user = user_file.exists()
+
+    if has_nix:
+        print(f"{Colors.CYAN}Nix config:{Colors.ENDC}  {nix_file}")
+    if has_user:
+        print(f"{Colors.CYAN}User config:{Colors.ENDC} {user_file}")
+    elif not has_nix:
+        print(f"{Colors.CYAN}Config file:{Colors.ENDC} {user_file}")
+        print(f"{Colors.WARNING}Config file does not exist yet.{Colors.ENDC}")
+        print(f"Run {Colors.CYAN}bt config init{Colors.ENDC} to get started.")
+        return
+
+    if has_nix and has_user:
+        print(f"\n{Colors.CYAN}Merged config (user overrides nix):{Colors.ENDC}")
+    elif has_nix:
+        print(f"\n{Colors.CYAN}Config (from nix):{Colors.ENDC}")
+
+    config = load_config()
+    print(json.dumps(config, indent=2))
+
+
+@config_app.command("path")
+def config_path():
+    """Print the config file path."""
+    print(str(get_config_file()))
+
+
+@config_app.command("edit")
+def config_edit():
+    """Open config file in $EDITOR."""
+    init_colors()
+    import shlex
+    import subprocess
+    config_file = get_config_file()
+    if not config_file.exists():
+        from .paths import ensure_dir
+        ensure_dir(config_file.parent)
+        config_file.write_text('{\n  "repos": []\n}\n')
+        print(f"{Colors.GREEN}Created config file: {config_file}{Colors.ENDC}")
+
+    if is_windows():
+        editor = os.environ.get('EDITOR', os.environ.get('VISUAL', 'notepad'))
+    else:
+        editor = os.environ.get('EDITOR', os.environ.get('VISUAL', 'nano'))
+    print(f"{Colors.CYAN}Opening {config_file} in {editor}...{Colors.ENDC}")
+    try:
+        editor_cmd = shlex.split(editor) + [str(config_file)]
+        subprocess.run(editor_cmd, check=True)
+    except FileNotFoundError:
+        print(f"{Colors.FAIL}Error: Editor '{editor.split()[0]}' not found{Colors.ENDC}")
+        print(f"Set the EDITOR environment variable to your preferred editor")
+        raise typer.Exit(1)
+    except subprocess.CalledProcessError as e:
+        print(f"{Colors.FAIL}Error: Editor exited with code {e.returncode}{Colors.ENDC}")
+        raise typer.Exit(1)
+
+
+@config_app.command("set")
+def config_set(
+    key: str = typer.Argument(..., help=f"Config key ({', '.join(CONFIG_SETTABLE_KEYS)})"),
+    value: str = typer.Argument(..., help="Value to set (empty string to clear)"),
+):
+    """Set a config value."""
+    init_colors()
+    if key not in CONFIG_SETTABLE_KEYS:
+        print(f"{Colors.FAIL}Error: Unknown config key '{key}'{Colors.ENDC}")
+        print(f"{Colors.CYAN}Valid keys:{Colors.ENDC}")
+        for k, desc in CONFIG_SETTABLE_KEYS.items():
+            print(f"  {k:30s} {desc}")
+        raise typer.Exit(1)
+
+    config = load_config()
+
+    if '.' in key:
+        section, subkey = key.split('.', 1)
+        if value == '':
+            if section in config:
+                config[section].pop(subkey, None)
+        else:
+            config.setdefault(section, {})[subkey] = value
+    else:
+        if value == '':
+            config.pop(key, None)
+        else:
+            config[key] = value
+
+    if save_config(config):
+        if value == '':
+            print(f"{Colors.GREEN}Cleared '{key}'{Colors.ENDC}")
+        else:
+            print(f"{Colors.GREEN}Set '{key}' = {value}{Colors.ENDC}")
+    else:
+        print(f"{Colors.FAIL}Error: Failed to save config{Colors.ENDC}")
+        raise typer.Exit(1)
+
+
+@config_app.command("add-repo")
+def config_add_repo(
+    name: Optional[str] = typer.Argument(None, help="Repo name (auto-detects from cwd if omitted)"),
+):
+    """Add a repo to the configured repos list."""
+    init_colors()
+    if name is None or (isinstance(name, str) and name == ''):
+        try:
+            repos_parent = str(get_repos_parent())
+        except TemplatesDirNotFound:
+            print(f"{Colors.FAIL}Error: Cannot auto-detect repo without repos_parent configured{Colors.ENDC}")
+            print(f"Either specify a repo name or run {Colors.CYAN}bt config set repos_parent <path>{Colors.ENDC} first")
+            raise typer.Exit(1)
+        repo_name = detect_current_repo(repos_parent)
+        if not repo_name:
+            print(f"{Colors.FAIL}Error: Could not detect current repo from working directory{Colors.ENDC}")
+            print(f"Run from within a repo directory, or specify: bt config add-repo <name>")
+            raise typer.Exit(1)
+    else:
+        repo_name = name
+
+    config = load_config()
+    repos = config.get('repos', [])
+
+    if repo_name in repos:
+        print(f"{Colors.BLUE}'{repo_name}' is already in configured repos{Colors.ENDC}")
+    else:
+        repos.append(repo_name)
+        config['repos'] = repos
+        if save_config(config):
+            print(f"{Colors.GREEN}Added '{repo_name}' to configured repos{Colors.ENDC}")
+        else:
+            print(f"{Colors.FAIL}Error: Failed to save config file{Colors.ENDC}")
+            raise typer.Exit(1)
+
+    print(f"\n{Colors.CYAN}Configured repos:{Colors.ENDC}")
+    for r in repos:
+        print(f"  - {r}")
+
+
+@config_app.command("remove-repo")
+def config_remove_repo(
+    name: str = typer.Argument(..., help="Repo name to remove"),
+):
+    """Remove a repo from the configured repos list."""
+    init_colors()
+    config = load_config()
+    repos = config.get('repos', [])
+
+    if name in repos:
+        repos.remove(name)
+        config['repos'] = repos
+        if save_config(config):
+            print(f"{Colors.GREEN}Removed '{name}' from configured repos{Colors.ENDC}")
+        else:
+            print(f"{Colors.FAIL}Error: Failed to save config file{Colors.ENDC}")
+            raise typer.Exit(1)
+    else:
+        print(f"{Colors.WARNING}'{name}' is not in configured repos{Colors.ENDC}")
+
+    print(f"\n{Colors.CYAN}Configured repos:{Colors.ENDC}")
+    for r in repos:
+        print(f"  - {r}")
+
+
+@config_app.command("init")
+def config_init(
+    non_interactive: bool = typer.Option(False, "-y", "--non-interactive", help="Fail instead of prompting for input"),
+):
+    """Interactive first-run configuration setup."""
+    init_colors()
+    config_file = get_config_file()
+
+    if config_file.exists():
+        print(f"{Colors.BLUE}Config already exists: {config_file}{Colors.ENDC}")
+        config = load_config()
+        print(json.dumps(config, indent=2))
+        if non_interactive:
+            raise typer.Exit()
+        overwrite = questionary.confirm("Overwrite existing config?", default=False).ask()
+        if not overwrite:
+            raise typer.Exit()
+
+    config = {'repos': []}
+
+    if non_interactive:
+        print(f"{Colors.FAIL}Error: Interactive setup requires a terminal{Colors.ENDC}")
+        print(f"Use {Colors.CYAN}bt config set <key> <value>{Colors.ENDC} instead")
+        raise typer.Exit(1)
+
+    # repos_parent
+    default_parent = '~/repos' if not is_windows() else ''
+    repos_parent_str = questionary.text(
+        "Parent directory containing your mod repos:",
+        default=default_parent,
+    ).ask()
+    if repos_parent_str is None:
+        raise typer.Exit()
+    if repos_parent_str:
+        config['repos_parent'] = repos_parent_str
+
+        # Auto-detect repos
+        expanded = os.path.expanduser(repos_parent_str)
+        if os.path.isdir(expanded):
+            dirs = sorted([
+                d for d in os.listdir(expanded)
+                if os.path.isdir(os.path.join(expanded, d)) and not d.startswith('.')
+            ])
+            if dirs:
+                print(f"\n{Colors.CYAN}Found directories:{Colors.ENDC}")
+                selected = questionary.checkbox(
+                    "Select repos to add:",
+                    choices=dirs,
+                ).ask()
+                if selected:
+                    config['repos'] = selected
+
+    # Namespace
+    namespace = questionary.text(
+        "Default Thunderstore namespace (author name):",
+        default='',
+    ).ask()
+    if namespace:
+        config.setdefault('defaults', {})['namespace'] = namespace
+
+    # Website URL
+    website = questionary.text(
+        "Default website URL (e.g., GitHub repo URL):",
+        default='',
+    ).ask()
+    if website:
+        config.setdefault('defaults', {})['website_url'] = website
+
+    # Release directory
+    release_dir = questionary.text(
+        "Central release directory (leave empty to skip):",
+        default='',
+    ).ask()
+    if release_dir:
+        config['release_dir'] = release_dir
+
+    if save_config(config):
+        print(f"\n{Colors.GREEN}Config saved to: {config_file}{Colors.ENDC}")
+        print(json.dumps(config, indent=2))
+    else:
+        print(f"{Colors.FAIL}Error: Failed to save config{Colors.ENDC}")
+        raise typer.Exit(1)
+
+
+def _interactive_config(repos_parent: Optional[str]):
+    """Handle config management from the interactive menu."""
+    sub = questionary.select(
+        "Configuration action:",
+        choices=[
+            "Show current config",
+            "Run setup wizard",
+            "Add a repo",
+            "Remove a repo",
+            "Edit config file",
+        ]
+    ).ask()
+    if not sub:
+        raise typer.Exit()
+
+    if sub == "Show current config":
+        config_show()
+    elif sub == "Run setup wizard":
+        config_init(non_interactive=False)
+    elif sub == "Add a repo":
+        repo_name = detect_current_repo(repos_parent) if repos_parent else None
+        if repo_name:
+            use_current = questionary.confirm(
+                f"Add current repo '{repo_name}'?", default=True
+            ).ask()
+            if use_current:
+                config_add_repo(name=repo_name)
+                return
+        name = questionary.text("Repo name:").ask()
+        if name:
+            config_add_repo(name=name)
+    elif sub == "Remove a repo":
+        repos = get_configured_repos()
+        if not repos:
+            print(f"{Colors.WARNING}No repos configured{Colors.ENDC}")
+            return
+        selection = questionary.select("Select repo to remove:", choices=repos).ask()
+        if selection:
+            config_remove_repo(name=selection)
+    elif sub == "Edit config file":
+        config_edit()
 
 
 def run():

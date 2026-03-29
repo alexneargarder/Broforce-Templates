@@ -12,11 +12,11 @@ _broforce_tools_completions()
     COMPREPLY=()
     cur="${COMP_WORDS[COMP_CWORD]}"
     prev="${COMP_WORDS[COMP_CWORD-1]}"
-    commands="create init-thunderstore package unreleased changelog deps"
+    commands="create init-thunderstore package unreleased changelog config deps"
 
     # Complete subcommands
     if [ $COMP_CWORD -eq 1 ]; then
-        COMPREPLY=($(compgen -W "$commands --help --clear-cache --add-repo --remove-repo --set-release-dir --version" -- "$cur"))
+        COMPREPLY=($(compgen -W "$commands --help --clear-cache --version" -- "$cur"))
         return 0
     fi
 
@@ -81,6 +81,26 @@ _broforce_tools_completions()
                             compopt -o filenames 2>/dev/null
                             local IFS=$'\n'
                             COMPREPLY=($(compgen -W "$(_get_projects package)" -- "$cur"))
+                        fi
+                        ;;
+                esac
+            fi
+            ;;
+        config)
+            # Handle config subcommands
+            if [ $COMP_CWORD -eq 2 ]; then
+                COMPREPLY=($(compgen -W "show path edit set add-repo remove-repo init --help" -- "$cur"))
+            else
+                local config_subcommand="${COMP_WORDS[2]}"
+                case "$config_subcommand" in
+                    set)
+                        if [ $COMP_CWORD -eq 3 ]; then
+                            COMPREPLY=($(compgen -W "repos_parent release_dir templates_dir defaults.namespace defaults.website_url" -- "$cur"))
+                        fi
+                        ;;
+                    init)
+                        if [[ "$cur" == -* ]]; then
+                            COMPREPLY=($(compgen -W "-y --non-interactive --help" -- "$cur"))
                         fi
                         ;;
                 esac

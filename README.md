@@ -70,29 +70,43 @@ Running without arguments opens interactive mode with a menu.
 
 ### Configuration
 
-Create a config file to configure repos and defaults:
-- **Windows:** `Scripts/broforce-tools.json` (next to the script)
-- **Linux/NixOS:** `~/.config/broforce-tools/config.json`
-```json
-{
-  "repos": ["BroforceMods", "RocketLib", "Bro-Maker"],
-  "ignore": {
-    "BroforceMods": ["ExampleMod"]
-  },
-  "defaults": {
-    "namespace": "YourName",
-    "website_url": "https://github.com/yourname/repo"
-  }
-}
+Run the setup wizard for first-time configuration:
+```bash
+bt config init
 ```
 
-- `repos` - Repositories to search for projects
-- `ignore` - Per-repo lists of project names to hide from selection menus
-- `defaults.namespace` - Pre-filled namespace for init-thunderstore
-- `defaults.website_url` - Pre-filled URL for init-thunderstore
-- `repos_parent` - Parent directory containing all repos (auto-detected from Broforce-Templates location)
+Or set values individually:
+```bash
+bt config set repos_parent D:\GitHub
+bt config add-repo BroforceMods
+bt config set defaults.namespace YourName
+```
+
+Config file location:
+- **Windows:** `%APPDATA%\broforce-tools\config.json`
+- **Linux/NixOS:** `~/.config/broforce-tools/config.json`
+
+Config commands:
+```bash
+bt config show          # Print config path and contents
+bt config path          # Print just the config file path
+bt config edit          # Open config in $EDITOR
+bt config set <key> <value>  # Set a value (empty string to clear)
+bt config add-repo [name]    # Add a repo (auto-detects from cwd)
+bt config remove-repo <name> # Remove a repo
+bt config init          # Interactive setup wizard
+```
+
+Available config keys:
+- `repos_parent` - Parent directory containing all repos
 - `release_dir` - Central directory to copy release zips after packaging
 - `templates_dir` - Path to Broforce-Templates repo (override for non-standard layouts)
+- `defaults.namespace` - Pre-filled namespace for init-thunderstore
+- `defaults.website_url` - Pre-filled URL for init-thunderstore
+
+Additional config file keys (edit manually or via NixOS module):
+- `repos` - Repositories to search for projects
+- `ignore` - Per-repo lists of project names to hide from selection menus
 
 ### create
 
@@ -197,12 +211,7 @@ bt deps --refresh    # Force re-fetch from API
 
 ### Global Flags
 
-These work with any subcommand or standalone:
-
 - `--all-repos` - Show projects from all configured repos (not just current directory)
-- `--add-repo [NAME]` - Add a repo to the config (uses current repo if name omitted)
-- `--remove-repo [NAME]` - Remove a repo from the config
-- `--set-release-dir [PATH]` - Set central directory for release zip copies (empty to clear)
 - `--clear-cache` - Clear the dependency version cache
 - `--version` - Show tool version
 

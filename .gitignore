@@ -454,3 +454,6 @@ Scripts/broforce-tools.json
 .direnv/
 Scripts/result
 
+# Build-generated bundled templates
+Scripts/src/broforce_tools/templates/
+

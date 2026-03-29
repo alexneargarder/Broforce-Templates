@@ -22,5 +22,8 @@ build-backend = "setuptools.build_meta"
 [tool.setuptools.packages.find]
 where = ["src"]
 
+[tool.setuptools.package-data]
+broforce_tools = ["templates/**/*"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]

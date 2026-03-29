@@ -207,8 +207,8 @@ WRAPPER
                   mkdir -p "$config_dir"
                   chown "$user_name:users" "$config_dir"
 
-                  echo '${configJson}' > "$config_dir/config.json"
-                  chown "$user_name:users" "$config_dir/config.json"
+                  echo '${configJson}' > "$config_dir/config.nix.json"
+                  chown "$user_name:users" "$config_dir/config.nix.json"
                 fi
               done
             '';
