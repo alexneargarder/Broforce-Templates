@@ -1,12 +1,13 @@
 """Cross-platform path handling for broforce-tools.
 
 On Linux: Uses XDG directories (~/.config/broforce-tools/, ~/.cache/broforce-tools/)
-On Windows: Uses script directory for config (existing behavior), temp for cache
+On Windows: Uses %APPDATA%/broforce-tools for config, temp for cache
 """
 import os
 import sys
 import tempfile
 from pathlib import Path
+from typing import Optional
 
 
 class TemplatesDirNotFound(Exception):
@@ -27,14 +28,17 @@ def get_config_dir() -> Path:
 
     Checks BROFORCE_CONFIG_DIR env var first (for testing).
     Linux: XDG_CONFIG_HOME/broforce-tools or ~/.config/broforce-tools
-    Windows: Same directory as the script (existing behavior)
+    Windows: %APPDATA%/broforce-tools
     """
     env_path = os.environ.get('BROFORCE_CONFIG_DIR')
     if env_path:
         return Path(env_path).expanduser()
 
     if is_windows():
-        return _get_script_dir()
+        appdata = os.environ.get('APPDATA')
+        if appdata:
+            return Path(appdata) / 'broforce-tools'
+        return Path.home() / 'AppData' / 'Roaming' / 'broforce-tools'
     else:
         xdg_config = os.environ.get('XDG_CONFIG_HOME')
         if xdg_config:
@@ -65,6 +69,7 @@ def get_templates_dir() -> Path:
     2. Script-relative path (works for in-repo execution)
     3. Config file 'templates_dir' key
     4. repos_parent / 'Broforce-Templates' (derived from env var or config)
+    5. Bundled package templates (for pipx installs)
 
     Raises TemplatesDirNotFound if none found.
     """
@@ -92,9 +97,14 @@ def get_templates_dir() -> Path:
         if (candidate / 'Mod Template').is_dir():
             return candidate
 
+    # Bundled templates (for pipx installs)
+    bundled = _get_bundled_templates_dir()
+    if bundled is not None:
+        return bundled
+
     raise TemplatesDirNotFound(
         "Could not find Broforce-Templates directory. "
-        "Set BROFORCE_TEMPLATES_DIR or configure 'repos_parent' in config."
+        "Run 'bt config init' or 'bt config set repos_parent <path>' to configure."
     )
 
 
@@ -118,10 +128,18 @@ def get_repos_parent() -> Path:
     return get_templates_dir().parent
 
 
+def _get_bundled_templates_dir() -> Optional[Path]:
+    """Get path to templates bundled inside the package (for pipx installs)."""
+    bundled = Path(__file__).parent / 'templates'
+    if (bundled / 'Mod Template').is_dir():
+        return bundled
+    return None
+
+
 def _get_script_dir() -> Path:
     """Get the directory containing this script/package.
 
-    Used for Windows config location and as fallback for templates.
+    Used as fallback for templates when running from within the repo.
     """
     return Path(__file__).parent.parent.parent
 

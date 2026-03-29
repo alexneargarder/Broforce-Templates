@@ -29,9 +29,22 @@ class TestGetTemplatesDir:
         result = get_templates_dir()
         assert result == templates
 
+    def test_bundled_templates_fallback(self, tmp_path, monkeypatch, isolated_config):
+        monkeypatch.delenv("BROFORCE_TEMPLATES_DIR", raising=False)
+        monkeypatch.setattr("broforce_tools.paths._get_script_dir", lambda: tmp_path / "fake")
+        # Create bundled templates structure
+        bundled = tmp_path / "bundled" / "templates"
+        (bundled / "Mod Template").mkdir(parents=True)
+        monkeypatch.setattr(
+            "broforce_tools.paths._get_bundled_templates_dir",
+            lambda: bundled,
+        )
+        assert get_templates_dir() == bundled
+
     def test_raises_when_not_found(self, tmp_path, monkeypatch, isolated_config):
         monkeypatch.delenv("BROFORCE_TEMPLATES_DIR", raising=False)
         monkeypatch.setattr("broforce_tools.paths._get_script_dir", lambda: tmp_path / "fake")
+        monkeypatch.setattr("broforce_tools.paths._get_bundled_templates_dir", lambda: None)
         with pytest.raises(TemplatesDirNotFound):
             get_templates_dir()
 
@@ -73,6 +86,20 @@ class TestGetConfigDir:
         monkeypatch.setattr("broforce_tools.paths.is_windows", lambda: False)
         result = get_config_dir()
         assert str(result).endswith(".config/broforce-tools")
+
+    def test_windows_appdata(self, tmp_path, monkeypatch):
+        monkeypatch.delenv("BROFORCE_CONFIG_DIR", raising=False)
+        monkeypatch.setattr("broforce_tools.paths.is_windows", lambda: True)
+        monkeypatch.setenv("APPDATA", str(tmp_path))
+        assert get_config_dir() == tmp_path / "broforce-tools"
+
+    def test_windows_appdata_fallback(self, monkeypatch):
+        monkeypatch.delenv("BROFORCE_CONFIG_DIR", raising=False)
+        monkeypatch.delenv("APPDATA", raising=False)
+        monkeypatch.setattr("broforce_tools.paths.is_windows", lambda: True)
+        result = get_config_dir()
+        assert str(result).endswith("AppData/Roaming/broforce-tools") or \
+               str(result).endswith("AppData\\Roaming\\broforce-tools")
 
 
 class TestGetCacheDir:

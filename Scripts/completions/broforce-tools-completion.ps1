@@ -37,8 +37,8 @@ Register-ArgumentCompleter -Native -CommandName @('broforce-tools', 'bt') -Scrip
         $tokenCount++
     }
 
-    $commands = @('create', 'init-thunderstore', 'package', 'unreleased', 'changelog', 'deps')
-    $globalFlags = @('--help', '-h', '--clear-cache', '--add-repo', '--remove-repo', '--set-release-dir', '--version')
+    $commands = @('create', 'init-thunderstore', 'package', 'unreleased', 'changelog', 'config', 'deps')
+    $globalFlags = @('--help', '-h', '--clear-cache', '--version')
 
     # Position 1: complete commands and global flags
     if ($tokenCount -le 2) {
@@ -109,6 +109,26 @@ Register-ArgumentCompleter -Native -CommandName @('broforce-tools', 'bt') -Scrip
                         _bt_complete_list $flags $wordToComplete 'ParameterName'
                     } else {
                         _bt_complete_list (_bt_get_projects 'package') $wordToComplete
+                    }
+                }
+            }
+        }
+        'config' {
+            if ($tokenCount -le 3) {
+                _bt_complete_list @('show', 'path', 'edit', 'set', 'add-repo', 'remove-repo', 'init', '--help') $wordToComplete 'ParameterName'
+            } else {
+                $configSub = $tokens[2]
+                switch ($configSub) {
+                    'set' {
+                        if ($tokenCount -le 4) {
+                            $keys = @('repos_parent', 'release_dir', 'templates_dir', 'defaults.namespace', 'defaults.website_url')
+                            _bt_complete_list $keys $wordToComplete
+                        }
+                    }
+                    'init' {
+                        if ($wordToComplete -like '-*') {
+                            _bt_complete_list @('-y', '--non-interactive', '--help') $wordToComplete 'ParameterName'
+                        }
                     }
                 }
             }
