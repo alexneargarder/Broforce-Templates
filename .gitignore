@@ -452,6 +452,7 @@ Scripts/broforce-tools.json
 .devenv/**
 .devenv.flake.nix
 .direnv/
+result
 Scripts/result
 
 # Build-generated bundled templates

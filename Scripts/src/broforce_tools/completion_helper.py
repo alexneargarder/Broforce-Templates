@@ -11,7 +11,7 @@ def main():
 
     from .config import load_config
     from .paths import get_repos_parent, TemplatesDirNotFound
-    from .templates import find_projects
+    from .project import find_projects
 
     config = load_config()
     try:
@@ -25,12 +25,12 @@ def main():
             print(repo)
     elif mode == 'init':
         projects = find_projects(repos_parent, repos, exclude_with_metadata=True)
-        for name, repo in projects:
-            print(name)
+        for project in projects:
+            print(project.name)
     elif mode == 'package':
         projects = find_projects(repos_parent, repos, require_metadata=True)
-        for name, repo in projects:
-            print(name)
+        for project in projects:
+            print(project.name)
 
 
 if __name__ == '__main__':

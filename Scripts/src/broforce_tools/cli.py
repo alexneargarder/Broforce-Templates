@@ -3,53 +3,44 @@ import click.exceptions
 import filecmp
 import json
 import os
-import re
 import shutil
-import tempfile
 import time
-import zipfile
 from typing import NoReturn, Optional
 
 import questionary
 import typer
 
 from . import __version__
-from .colors import Colors, init_colors, CHECK, WARNING_ICON, ARROW
+from .colors import Colors, init_colors
 from .paths import TemplatesDirNotFound
-from .config import get_config_file, get_configured_repos, get_nix_config_file, get_release_dir, load_config, save_config, get_defaults
+from .config import get_config_file, get_configured_repos, get_nix_config_file, load_config, save_config
 from .paths import get_repos_parent, get_templates_dir, get_config_dir, is_windows
 from .project_types import PROJECT_TYPES, get_type_names, get_display_names
+from .project import (
+    Project,
+    detect_current_repo,
+    find_project_by_name,
+    find_projects,
+    get_repos_to_search,
+)
 from .templates import (
     copyanything,
-    detect_current_repo,
-    detect_project_type,
-    find_mod_metadata_dir,
-    find_projects,
     find_replace,
-    get_releases_path,
-    get_repos_to_search,
-    get_source_directory,
     rename_files,
 )
 from .thunderstore import (
     CACHE_DURATION,
     add_changelog_entry,
+    check_missing_required,
     clear_cache,
-    compare_versions,
-    detect_dependencies_from_csproj,
+    do_init_thunderstore,
+    do_package,
     find_changelog,
-    find_dll_in_modcontent,
     get_cache_file,
-    get_dependencies,
     get_dependency_versions,
     get_latest_version_entries,
     get_unreleased_entries,
-    get_version_from_changelog,
-    get_version_from_info_json,
     has_unreleased_version,
-    sanitize_package_name,
-    sync_version_file,
-    validate_package_name,
 )
 
 app = typer.Typer(
@@ -81,7 +72,7 @@ def _complete_project_names_without_metadata(incomplete: str) -> list[str]:
         repos_parent = str(get_repos_parent())
         repos = _get_repos_for_completion(repos_parent)
         projects = find_projects(repos_parent, repos, exclude_with_metadata=True)
-        return [_escape_for_completion(p[0]) for p in projects]
+        return [_escape_for_completion(p.name) for p in projects]
     except TemplatesDirNotFound:
         return []
 
@@ -92,7 +83,7 @@ def _complete_project_names_with_metadata(incomplete: str) -> list[str]:
         repos_parent = str(get_repos_parent())
         repos = _get_repos_for_completion(repos_parent)
         projects = find_projects(repos_parent, repos, require_metadata=True)
-        return [_escape_for_completion(p[0]) for p in projects]
+        return [_escape_for_completion(p.name) for p in projects]
     except TemplatesDirNotFound:
         return []
 
@@ -114,29 +105,19 @@ def _complete_none(incomplete: str) -> list[str]:
     return []
 
 
-def check_missing_required(missing: list[tuple[str, str]]) -> None:
-    """Error if any required values are missing in non-interactive mode."""
-    if missing:
-        print(f"{Colors.FAIL}Error: Non-interactive mode requires the following:{Colors.ENDC}")
-        for flag, desc in missing:
-            print(f"  {flag}: {desc}")
-        print(f"\nRun without --non-interactive for interactive prompts, or provide the missing options.")
-        raise typer.Exit(1)
-
-
-def _run_batch(projects: list[tuple[str, str]], action, **kwargs) -> None:
+def _run_batch(projects: list[Project], action, **kwargs) -> None:
     """Run an action on multiple projects, continuing on failure."""
     failures = []
-    for project_name, repo in projects:
+    for project in projects:
         if len(projects) > 1:
             print(f"\n{Colors.HEADER}{'='*50}{Colors.ENDC}")
         try:
-            action(project_name, **kwargs)
+            action(project, **kwargs)
         except (SystemExit, click.exceptions.Exit):
-            failures.append(project_name)
+            failures.append(project.name)
         except Exception as e:
             print(f"{Colors.FAIL}Error: {e}{Colors.ENDC}")
-            failures.append(project_name)
+            failures.append(project.name)
     if failures:
         print(f"\n{Colors.WARNING}{len(failures)} project(s) failed: {', '.join(failures)}{Colors.ENDC}")
 
@@ -146,7 +127,7 @@ def select_projects_interactive(
     mode: str,
     use_all_repos: bool = False,
     allow_batch: bool = True
-) -> list[tuple[str, str]]:
+) -> list[Project]:
     """Interactive project selection for commands."""
     repos, is_single_repo = get_repos_to_search(repos_parent, use_all_repos)
     if not repos:
@@ -170,8 +151,7 @@ def select_projects_interactive(
         return []
 
     if len(projects) == 1:
-        project_name, repo = projects[0]
-        print(f"{Colors.CYAN}Using project: {project_name}{Colors.ENDC}")
+        print(f"{Colors.CYAN}Using project: {projects[0].name}{Colors.ENDC}")
         return [projects[0]]
 
     if allow_batch:
@@ -180,9 +160,9 @@ def select_projects_interactive(
         choices = []
 
     if is_single_repo:
-        choices.extend([name for name, repo in projects])
+        choices.extend([project.name for project in projects])
     else:
-        choices.extend([f"{name} ({repo})" for name, repo in projects])
+        choices.extend([f"{project.name} ({project.repo})" for project in projects])
 
     prompt = f"Select project:" if not is_single_repo else f"Select project from {repos[0]}:"
     selection = questionary.select(prompt, choices=choices).ask()
@@ -194,671 +174,16 @@ def select_projects_interactive(
         return projects
 
     if is_single_repo:
-        return [(selection, repos[0])]
+        for p in projects:
+            if p.name == selection:
+                return [p]
+        return []
     else:
         project_name = selection.rsplit(' (', 1)[0]
         for p in projects:
-            if p[0] == project_name:
+            if p.name == project_name:
                 return [p]
         return []
-
-
-def do_init_thunderstore(
-    project_name: str,
-    repos_parent: str,
-    namespace: Optional[str] = None,
-    description: Optional[str] = None,
-    website_url: Optional[str] = None,
-    package_name_override: Optional[str] = None,
-    non_interactive: bool = False,
-) -> None:
-    """Initialize Thunderstore metadata for an existing project."""
-    print(f"{Colors.HEADER}Initializing Thunderstore metadata for '{project_name}'{Colors.ENDC}")
-
-    template_dir = get_templates_dir()
-
-    repos = get_configured_repos()
-    if not repos:
-        repos = [d for d in os.listdir(repos_parent) if os.path.isdir(os.path.join(repos_parent, d))]
-
-    project_path = None
-    releases_path = None
-    output_repo = None
-
-    for repo in repos:
-        repo_path = os.path.join(repos_parent, repo)
-        potential_project = os.path.join(repo_path, project_name)
-
-        if os.path.exists(potential_project) and os.path.isdir(potential_project):
-            project_path = potential_project
-            releases_path = get_releases_path(repos_parent, repo, project_name, create=True)
-            output_repo = repo
-            break
-
-    if not project_path or not releases_path:
-        print(f"{Colors.FAIL}Error: Could not find project '{project_name}'{Colors.ENDC}")
-        print(f"Searched in: {repos_parent}")
-        raise typer.Exit(1)
-
-    print(f"{Colors.BLUE}Found project in: {output_repo}{Colors.ENDC}")
-
-    project_type = detect_project_type(project_path)
-    if not project_type:
-        print(f"{Colors.FAIL}Error: Could not detect project type (no metadata folder or missing Info.json/*.mod.json){Colors.ENDC}")
-        raise typer.Exit(1)
-
-    print(f"{Colors.BLUE}Detected project type: {project_type}{Colors.ENDC}")
-
-    defaults = get_defaults()
-    default_namespace = defaults.get('namespace', '')
-    default_website = defaults.get('website_url', '')
-
-    # Collect missing required values for non-interactive mode
-    missing: list[tuple[str, str]] = []
-
-    # Namespace
-    if namespace is not None:
-        final_namespace = namespace
-    elif non_interactive:
-        if default_namespace:
-            final_namespace = default_namespace
-        else:
-            missing.append(("--namespace / -n", "Thunderstore namespace/author"))
-            final_namespace = ""
-    else:
-        print(f"\n{Colors.HEADER}Enter Thunderstore package information:{Colors.ENDC}")
-        if default_namespace:
-            final_namespace = questionary.text(
-                f"Namespace/Author [{default_namespace}]:",
-                default=default_namespace,
-                validate=lambda text: validate_package_name(text)[0] if text else True
-            ).ask()
-            if final_namespace is None:
-                raise typer.Exit()
-            if not final_namespace:
-                final_namespace = default_namespace
-        else:
-            final_namespace = questionary.text(
-                "Namespace/Author (e.g., AlexNeargarder):",
-                validate=lambda text: validate_package_name(text)[0]
-            ).ask()
-            if final_namespace is None or not final_namespace:
-                raise typer.Exit()
-
-    # Package name
-    suggested_name = sanitize_package_name(project_name)
-    if package_name_override is not None:
-        final_package_name = package_name_override
-    elif non_interactive:
-        final_package_name = suggested_name
-    else:
-        final_package_name = questionary.text(
-            f"Package name [{suggested_name}]:",
-            default=suggested_name,
-            validate=lambda text: validate_package_name(text)[0] if text else True
-        ).ask()
-        if final_package_name is None:
-            raise typer.Exit()
-        if not final_package_name:
-            final_package_name = suggested_name
-
-    # Description
-    if description is not None:
-        final_description = description
-    elif non_interactive:
-        missing.append(("--description / -d", "Package description (max 250 chars)"))
-        final_description = ""
-    else:
-        final_description = questionary.text("Description (max 250 chars):").ask()
-        if final_description is None:
-            raise typer.Exit()
-
-    if len(final_description) > 250:
-        print(f"{Colors.WARNING}Warning: Description truncated to 250 characters{Colors.ENDC}")
-        final_description = final_description[:250]
-
-    # Website URL
-    if website_url is not None:
-        final_website_url = website_url
-    elif non_interactive:
-        final_website_url = default_website
-    else:
-        if default_website:
-            final_website_url = questionary.text(
-                f"Website/GitHub URL [{default_website}]:",
-                default=default_website
-            ).ask()
-            if final_website_url is None:
-                raise typer.Exit()
-            if not final_website_url:
-                final_website_url = default_website
-        else:
-            final_website_url = questionary.text("Website/GitHub URL:").ask()
-            if final_website_url is None:
-                raise typer.Exit()
-            final_website_url = final_website_url or ""
-
-    # Check for missing required values in non-interactive mode
-    check_missing_required(missing)
-
-    # Create releases directory if it doesn't exist
-    os.makedirs(releases_path, exist_ok=True)
-
-    changelog_path = find_changelog(releases_path)
-    if not changelog_path:
-        changelog_path = os.path.join(releases_path, 'Changelog.md')
-        print(f"{Colors.WARNING}Changelog not found, creating default{Colors.ENDC}")
-        with open(changelog_path, 'w', encoding='utf-8') as f:
-            f.write('## v1.0.0 (unreleased)\n- Initial release\n')
-
-    detected_deps = detect_dependencies_from_csproj(project_path)
-    dependencies = get_dependencies()
-
-    type_info = PROJECT_TYPES.get(project_type, {})
-    for dep_key in type_info.get("extra_dependencies", []):
-        dep_str = dependencies.get(dep_key)
-        if dep_str and dep_str not in detected_deps:
-            detected_deps.append(dep_str)
-
-    if len(detected_deps) > 1:
-        print(f"{Colors.BLUE}Detected dependencies:{Colors.ENDC}")
-        for dep in detected_deps:
-            if dep != dependencies['UMM']:
-                print(f"  - {dep}")
-
-    manifest_path = os.path.join(releases_path, 'manifest.json')
-    manifest_data = {
-        "name": final_package_name,
-        "author": final_namespace,
-        "version_number": "1.0.0",
-        "website_url": final_website_url,
-        "description": final_description,
-        "dependencies": detected_deps
-    }
-
-    with open(manifest_path, 'w', encoding='utf-8') as f:
-        json.dump(manifest_data, f, indent=2)
-
-    print(f"{Colors.GREEN}Created manifest.json{Colors.ENDC}")
-
-    readme_template = os.path.join(template_dir, 'ThunderstorePackage', 'README.md')
-    readme_dest = os.path.join(releases_path, 'README.md')
-
-    if os.path.exists(readme_dest):
-        print(f"{Colors.BLUE}README.md already exists, skipping{Colors.ENDC}")
-    elif os.path.exists(readme_template):
-        with open(readme_template, 'r', encoding='utf-8') as f:
-            readme_content = f.read()
-
-        readme_content = readme_content.replace('PROJECT_NAME', project_name)
-        readme_content = readme_content.replace('DESCRIPTION_PLACEHOLDER', final_description)
-        readme_content = readme_content.replace('FEATURES_PLACEHOLDER', '*Describe your mod\'s features here*')
-        readme_content = readme_content.replace('WEBSITE_URL', final_website_url)
-
-        with open(readme_dest, 'w', encoding='utf-8') as f:
-            f.write(readme_content)
-
-        print(f"{Colors.GREEN}Created README.md{Colors.ENDC}")
-    else:
-        print(f"{Colors.WARNING}Warning: README template not found at {readme_template}{Colors.ENDC}")
-
-    icon_template = os.path.join(template_dir, 'ThunderstorePackage', 'icon.png')
-    icon_dest = os.path.join(releases_path, 'icon.png')
-
-    if os.path.exists(icon_dest):
-        print(f"{Colors.BLUE}icon.png already exists, skipping{Colors.ENDC}")
-    elif os.path.exists(icon_template):
-        shutil.copy(icon_template, icon_dest)
-        print(f"{Colors.GREEN}Created icon.png{Colors.ENDC}")
-        print(f"{Colors.WARNING}{WARNING_ICON}Replace icon.png with a custom 256x256 image!{Colors.ENDC}")
-    else:
-        print(f"{Colors.WARNING}Warning: Icon template not found at {icon_template}{Colors.ENDC}")
-
-    print(f"\n{Colors.GREEN}{Colors.BOLD}{CHECK} Thunderstore metadata initialized!{Colors.ENDC}")
-    print(f"{Colors.CYAN}Location:{Colors.ENDC} {releases_path}")
-    print(f"\n{Colors.CYAN}Files created:{Colors.ENDC}")
-    print(f"  - manifest.json")
-    print(f"  - README.md (customize for Thunderstore)")
-    print(f"  - icon.png ({WARNING_ICON}placeholder - replace with 256x256 custom icon!)")
-    print(f"\n{Colors.CYAN}Next steps:{Colors.ENDC}")
-    print(f"  1. Edit {releases_path}/README.md")
-    print(f"  2. Replace icon.png with custom icon")
-    print(f"  3. Review manifest.json dependencies")
-    print(f"  4. Run: bt package \"{project_name}\"")
-
-
-def _copy_to_release_dir(zip_path: str, namespace: str, package_name: str) -> None:
-    """Copy a packaged zip to the central release directory, if configured."""
-    release_dir = get_release_dir()
-    if not release_dir:
-        return
-
-    try:
-        os.makedirs(release_dir, exist_ok=True)
-
-        prefix = f"{namespace}-{package_name}-"
-        for existing in os.listdir(release_dir):
-            if existing.startswith(prefix) and existing.endswith('.zip'):
-                os.remove(os.path.join(release_dir, existing))
-
-        dest_path = os.path.join(release_dir, os.path.basename(zip_path))
-        shutil.copy2(zip_path, dest_path)
-        print(f"{Colors.GREEN}Copied to release dir:{Colors.ENDC} {dest_path}")
-    except OSError as e:
-        print(f"{Colors.WARNING}Warning: Could not copy to release dir: {e}{Colors.ENDC}")
-
-
-def do_package(
-    project_name: str,
-    repos_parent: str,
-    version_override: Optional[str] = None,
-    non_interactive: bool = False,
-    allow_outdated_changelog: bool = False,
-    overwrite: bool = False,
-    update_deps: Optional[bool] = None,
-    add_missing_deps: Optional[bool] = None,
-    keep_unreleased: bool = False,
-) -> None:
-    """Create Thunderstore package for an existing project."""
-    template_dir = get_templates_dir()
-
-    repos = get_configured_repos()
-    if not repos:
-        repos = [d for d in os.listdir(repos_parent) if os.path.isdir(os.path.join(repos_parent, d))]
-    project_path = None
-    releases_path = None
-    output_repo = None
-
-    for repo in repos:
-        repo_path = os.path.join(repos_parent, repo)
-        potential_project = os.path.join(repo_path, project_name)
-
-        if os.path.exists(potential_project) and os.path.isdir(potential_project):
-            releases_path = get_releases_path(repos_parent, repo, project_name, create=False)
-            if releases_path:
-                project_path = potential_project
-                output_repo = repo
-                break
-
-    if not project_path or not releases_path:
-        print(f"{Colors.FAIL}Error: Could not find project '{project_name}'{Colors.ENDC}")
-        raise typer.Exit(1)
-
-    manifest_path = os.path.join(releases_path, 'manifest.json')
-    readme_path = os.path.join(releases_path, 'README.md')
-    icon_path = os.path.join(releases_path, 'icon.png')
-    changelog_path = find_changelog(releases_path)
-
-    if not os.path.exists(manifest_path):
-        print(f"{Colors.FAIL}Error: manifest.json not found{Colors.ENDC}")
-        print(f"Run: bt init-thunderstore \"{project_name}\"")
-        raise typer.Exit(1)
-
-    if not os.path.exists(readme_path):
-        print(f"{Colors.FAIL}Error: README.md not found{Colors.ENDC}")
-        raise typer.Exit(1)
-
-    if not os.path.exists(icon_path):
-        print(f"{Colors.FAIL}Error: icon.png not found{Colors.ENDC}")
-        raise typer.Exit(1)
-
-    if not changelog_path:
-        print(f"{Colors.FAIL}Error: Changelog.md or CHANGELOG.md not found{Colors.ENDC}")
-        raise typer.Exit(1)
-
-    project_type = detect_project_type(project_path)
-    if not project_type:
-        print(f"{Colors.FAIL}Error: Could not detect project type{Colors.ENDC}")
-        raise typer.Exit(1)
-
-    metadata_dir = find_mod_metadata_dir(project_path)
-    if not metadata_dir:
-        print(f"{Colors.FAIL}Error: Could not find metadata folder{Colors.ENDC}")
-        raise typer.Exit(1)
-
-    type_info = PROJECT_TYPES.get(project_type, {})
-    if type_info.get("has_code", True):
-        dll_path = find_dll_in_modcontent(metadata_dir)
-
-        if not dll_path:
-            print(f"{Colors.FAIL}Error: No DLL found in metadata folder{Colors.ENDC}")
-            print(f"Build the project first")
-            raise typer.Exit(1)
-
-    icon_template = os.path.join(template_dir, 'ThunderstorePackage', 'icon.png')
-    if os.path.exists(icon_template) and filecmp.cmp(icon_path, icon_template, shallow=False):
-        print(f"{Colors.WARNING}{WARNING_ICON}Warning: Using placeholder icon{Colors.ENDC}")
-
-    changelog_name = os.path.basename(changelog_path)
-
-    if version_override:
-        version = version_override
-        print(f"{Colors.CYAN}Using version override: {version}{Colors.ENDC}")
-    else:
-        changelog_version = get_version_from_changelog(changelog_path)
-        manifest_version = None
-        info_version = None
-
-        try:
-            with open(manifest_path, 'r', encoding='utf-8') as f:
-                manifest_data_temp = json.load(f)
-            manifest_version = manifest_data_temp.get('version_number', None)
-        except Exception:
-            pass
-
-        info_version = get_version_from_info_json(metadata_dir, project_type)
-
-        versions = {
-            changelog_name: changelog_version,
-            'manifest.json': manifest_version,
-            (type_info.get("version_file_label") or "metadata"): info_version
-        }
-
-        valid_versions = {k: v for k, v in versions.items() if v is not None}
-
-        if not valid_versions:
-            print(f"{Colors.FAIL}Error: Could not find version in any file{Colors.ENDC}")
-            print(f"Expected version in {changelog_name}, manifest.json, or Info.json/.mod.json")
-            raise typer.Exit(1)
-
-        highest_version = None
-        highest_source = None
-        for source, ver in valid_versions.items():
-            if highest_version is None or compare_versions(ver, highest_version) > 0:
-                highest_version = ver
-                highest_source = source
-
-        version = highest_version
-
-        print(f"{Colors.CYAN}Package version: {version}{Colors.ENDC}")
-
-        if changelog_version and compare_versions(changelog_version, version) < 0:
-            print(f"\n{Colors.WARNING}Warning: {changelog_name} is out of date!{Colors.ENDC}")
-            print(f"{Colors.CYAN}Changelog version: {changelog_version}{Colors.ENDC}")
-            print(f"{Colors.CYAN}Highest version found: {version} (from {highest_source}){Colors.ENDC}")
-            print(f"\n{Colors.WARNING}Did you forget to update {changelog_name}?{Colors.ENDC}")
-
-            if non_interactive:
-                if not allow_outdated_changelog:
-                    print(f"\n{Colors.FAIL}Error: Changelog is outdated. Use --allow-outdated-changelog to package anyway.{Colors.ENDC}")
-                    raise typer.Exit(1)
-            else:
-                continue_package = questionary.confirm(
-                    f"Continue packaging with version {version}?",
-                    default=False
-                ).ask()
-
-                if continue_package is None or not continue_package:
-                    print(f"\n{Colors.CYAN}Packaging cancelled.{Colors.ENDC}")
-                    print(f"Update {changelog_name} to version {version} before packaging.")
-                    raise typer.Exit()
-
-    with open(manifest_path, 'r', encoding='utf-8') as f:
-        manifest_data = json.load(f)
-
-    namespace = manifest_data.get('author', 'Unknown')
-    package_name = manifest_data.get('name', project_name.replace(' ', '_'))
-
-    if namespace == 'Unknown' or not namespace:
-        print(f"\n{Colors.WARNING}Warning: No author/namespace set in manifest.json{Colors.ENDC}")
-        print(f"{Colors.CYAN}The author field is used for the package filename and Thunderstore namespace.{Colors.ENDC}")
-
-        if non_interactive:
-            print(f"\n{Colors.FAIL}Error: No author set in manifest.json. Edit manifest.json to add an author.{Colors.ENDC}")
-            raise typer.Exit(1)
-
-        set_author = questionary.confirm(
-            "Set author name now?",
-            default=True
-        ).ask()
-
-        if set_author is None:
-            raise typer.Exit()
-        elif set_author:
-            namespace = questionary.text(
-                "Enter namespace/author (alphanumeric + underscores only):",
-                validate=lambda text: validate_package_name(text)[0]
-            ).ask()
-
-            if namespace is None:
-                raise typer.Exit()
-
-            manifest_data['author'] = namespace
-            print(f"{Colors.GREEN}Author set to: {namespace}{Colors.ENDC}")
-        else:
-            print(f"{Colors.WARNING}Continuing with 'Unknown' as author (package will be named Unknown-{package_name}-{version}.zip){Colors.ENDC}")
-
-    dependencies = get_dependencies()
-    current_deps = manifest_data.get('dependencies', [])
-    outdated_deps = []
-    updated_deps = []
-
-    for dep in current_deps:
-        parts = dep.rsplit('-', 1)
-        if len(parts) == 2:
-            dep_name_part, dep_version = parts
-            for dep_key, current_dep_string in dependencies.items():
-                if current_dep_string.startswith(dep_name_part + '-'):
-                    if dep != current_dep_string:
-                        outdated_deps.append((dep, current_dep_string))
-                        updated_deps.append(current_dep_string)
-                    else:
-                        updated_deps.append(dep)
-                    break
-            else:
-                updated_deps.append(dep)
-        else:
-            updated_deps.append(dep)
-
-    if outdated_deps:
-        print(f"\n{Colors.WARNING}Outdated dependencies detected:{Colors.ENDC}")
-        for old_dep, new_dep in outdated_deps:
-            print(f"  {old_dep} {ARROW} {new_dep}")
-
-        if non_interactive:
-            # Default to True in non-interactive mode unless explicitly set to False
-            should_update = update_deps if update_deps is not None else True
-        else:
-            update = questionary.confirm(
-                "Update dependencies to latest versions?",
-                default=True
-            ).ask()
-
-            if update is None:
-                raise typer.Exit()
-            should_update = update
-
-        if should_update:
-            manifest_data['dependencies'] = updated_deps
-            print(f"{Colors.GREEN}Dependencies updated{Colors.ENDC}")
-        else:
-            print(f"{Colors.CYAN}Keeping existing dependency versions{Colors.ENDC}")
-    else:
-        updated_deps = current_deps
-
-    detected_deps = detect_dependencies_from_csproj(project_path)
-    current_dep_set = set(updated_deps if updated_deps else current_deps)
-    missing_deps = []
-
-    for dep in detected_deps:
-        if dep not in current_dep_set:
-            missing_deps.append(dep)
-
-    if missing_deps:
-        print(f"\n{Colors.WARNING}Warning: Dependencies detected in .csproj but not in manifest.json:{Colors.ENDC}")
-        for dep in missing_deps:
-            print(f"  + {dep}")
-
-        if non_interactive:
-            # Default to True in non-interactive mode unless explicitly set to False
-            should_add = add_missing_deps if add_missing_deps is not None else True
-        else:
-            add_deps_prompt = questionary.confirm(
-                "Add missing dependencies to manifest?",
-                default=True
-            ).ask()
-
-            if add_deps_prompt is None:
-                raise typer.Exit()
-            should_add = add_deps_prompt
-
-        if should_add:
-            if updated_deps:
-                updated_deps.extend(missing_deps)
-            else:
-                updated_deps = list(current_dep_set) + missing_deps
-            manifest_data['dependencies'] = updated_deps
-            print(f"{Colors.GREEN}Missing dependencies added{Colors.ENDC}")
-        else:
-            print(f"{Colors.CYAN}Continuing without adding missing dependencies{Colors.ENDC}")
-
-    old_manifest_version = manifest_data.get('version_number', None)
-    manifest_data['version_number'] = version
-
-    with open(manifest_path, 'w', encoding='utf-8') as f:
-        json.dump(manifest_data, f, indent=2)
-
-    if old_manifest_version != version:
-        print(f"{Colors.GREEN}Updated manifest.json version to {version}{Colors.ENDC}")
-    else:
-        print(f"{Colors.BLUE}manifest.json already at version {version}{Colors.ENDC}")
-
-    updated, version_file_path = sync_version_file(metadata_dir, project_type, version)
-    if updated:
-        version_file_name = os.path.basename(version_file_path)
-        print(f"{Colors.GREEN}Updated {version_file_name} version to {version}{Colors.ENDC}")
-    elif version_file_path:
-        version_file_name = os.path.basename(version_file_path)
-        print(f"{Colors.BLUE}{version_file_name} already at version {version}{Colors.ENDC}")
-    else:
-        label = type_info.get("version_file_label")
-        if label:
-            print(f"{Colors.WARNING}Warning: Could not find {label} to sync version{Colors.ENDC}")
-
-    if project_type == 'bro' and version_file_path:
-        try:
-            with open(version_file_path, 'r', encoding='utf-8') as f:
-                mod_json_data = json.load(f)
-
-            current_bromaker_version = mod_json_data.get('BroMakerVersion', None)
-            if current_bromaker_version:
-                dep_versions = get_dependency_versions()
-                latest_bromaker_version = dep_versions.get('BroMaker', current_bromaker_version)
-
-                if current_bromaker_version != latest_bromaker_version:
-                    print(f"\n{Colors.WARNING}Outdated BroMakerVersion in {os.path.basename(version_file_path)}:{Colors.ENDC}")
-                    print(f"  {current_bromaker_version} {ARROW} {latest_bromaker_version}")
-
-                    if non_interactive:
-                        # Auto-update in non-interactive mode
-                        should_update_bromaker = True
-                    else:
-                        update_bromaker = questionary.confirm(
-                            "Update BroMakerVersion to latest?",
-                            default=True
-                        ).ask()
-
-                        if update_bromaker is None:
-                            raise typer.Exit()
-                        should_update_bromaker = update_bromaker
-
-                    if should_update_bromaker:
-                        mod_json_data['BroMakerVersion'] = latest_bromaker_version
-                        with open(version_file_path, 'w', encoding='utf-8') as f:
-                            json.dump(mod_json_data, f, indent=2)
-                        print(f"{Colors.GREEN}Updated BroMakerVersion to {latest_bromaker_version}{Colors.ENDC}")
-        except (json.JSONDecodeError, OSError):
-            pass
-
-    zip_filename = f"{namespace}-{package_name}-{version}.zip"
-    zip_path = os.path.join(releases_path, zip_filename)
-
-    if os.path.exists(zip_path):
-        print(f"\n{Colors.WARNING}Package {zip_filename} already exists{Colors.ENDC}")
-
-        if non_interactive:
-            if not overwrite:
-                print(f"\n{Colors.FAIL}Error: Package already exists. Use --overwrite to replace it.{Colors.ENDC}")
-                raise typer.Exit(1)
-            should_overwrite = True
-        else:
-            overwrite_prompt = questionary.confirm(
-                "Overwrite existing package?",
-                default=True
-            ).ask()
-
-            if overwrite_prompt is None:
-                raise typer.Exit()
-            should_overwrite = overwrite_prompt
-
-        if not should_overwrite:
-            print(f"\n{Colors.CYAN}Packaging cancelled.{Colors.ENDC}")
-            print(f"To create a new package, update the version in {changelog_name}")
-            raise typer.Exit()
-
-        os.remove(zip_path)
-        print(f"{Colors.BLUE}Removed existing package{Colors.ENDC}")
-    else:
-        old_zips = [f for f in os.listdir(releases_path) if f.endswith('.zip')]
-        if old_zips:
-            prev_versions_dir = os.path.join(releases_path, 'Previous Versions')
-            if not os.path.exists(prev_versions_dir):
-                os.makedirs(prev_versions_dir)
-
-            for old_zip in old_zips:
-                old_zip_path = os.path.join(releases_path, old_zip)
-                new_zip_path = os.path.join(prev_versions_dir, old_zip)
-                shutil.move(old_zip_path, new_zip_path)
-                print(f"{Colors.BLUE}Archived: {old_zip}{Colors.ENDC}")
-
-    print(f"{Colors.CYAN}Creating package: {zip_filename}{Colors.ENDC}")
-
-    with tempfile.TemporaryDirectory() as temp_dir:
-        shutil.copy2(manifest_path, os.path.join(temp_dir, 'manifest.json'))
-        shutil.copy2(readme_path, os.path.join(temp_dir, 'README.md'))
-        shutil.copy2(icon_path, os.path.join(temp_dir, 'icon.png'))
-
-        with open(changelog_path, 'r', encoding='utf-8') as f:
-            changelog_content = f.read()
-
-        changelog_cleaned = re.sub(
-            r'(##\s*v?\d+\.\d+\.\d+:?)\s*\(unreleased\)',
-            r'\1',
-            changelog_content,
-            flags=re.IGNORECASE
-        )
-
-        if not keep_unreleased and changelog_cleaned != changelog_content:
-            with open(changelog_path, 'w', encoding='utf-8') as f:
-                f.write(changelog_cleaned)
-            print(f"{Colors.GREEN}Removed (unreleased) tag from {changelog_name}{Colors.ENDC}")
-
-        with open(os.path.join(temp_dir, 'CHANGELOG.md'), 'w', encoding='utf-8') as f:
-            f.write(changelog_cleaned)
-
-        umm_base = os.path.join(temp_dir, 'UMM')
-        target_dir = os.path.join(umm_base, type_info.get("install_subdir", "Mods"), project_name)
-
-        os.makedirs(target_dir, exist_ok=True)
-
-        copyanything(metadata_dir, target_dir)
-
-        with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED, strict_timestamps=False) as zipf:
-            for root, dirs, files in os.walk(temp_dir):
-                for file in files:
-                    file_path = os.path.join(root, file)
-                    arcname = os.path.relpath(file_path, temp_dir)
-                    zipf.write(file_path, arcname)
-
-    zip_size = os.path.getsize(zip_path) / 1024
-
-    print(f"\n{Colors.GREEN}{Colors.BOLD}{CHECK} Package created!{Colors.ENDC}")
-    print(f"{Colors.CYAN}Version:{Colors.ENDC} {version}")
-    print(f"{Colors.CYAN}File:{Colors.ENDC} {zip_path}")
-    print(f"{Colors.CYAN}Size:{Colors.ENDC} {zip_size:.1f} KB")
-    print(f"\n{Colors.CYAN}Package ready for Thunderstore upload!{Colors.ENDC}")
-
-    _copy_to_release_dir(zip_path, namespace, package_name)
 
 
 def do_create_project(
@@ -1109,7 +434,14 @@ def do_create_project(
                 raise typer.Exit()
             elif setup_thunderstore:
                 print()
-                do_init_thunderstore(newName, repos_parent)
+                new_project = Project(
+                    name=newName,
+                    repo=output_repo_name,
+                    subdir=newName,
+                    repos_parent=repos_parent,
+                    project_type=template_type,
+                )
+                do_init_thunderstore(new_project)
             else:
                 print(f"\n{Colors.CYAN}Next steps:{Colors.ENDC}")
                 if type_info["has_code"]:
@@ -1135,10 +467,10 @@ def do_create_project(
         raise typer.Exit(1)
 
 
-def _select_project_for_changelog(repos_parent: str) -> Optional[tuple[str, str, str]]:
+def _select_project_for_changelog(repos_parent: str) -> Optional[tuple[Project, str, str]]:
     """Interactive project selection for changelog commands.
 
-    Returns (project_name, releases_path, changelog_path) or None if cancelled.
+    Returns (project, releases_path, changelog_path) or None if cancelled.
     """
     repos, _ = get_repos_to_search(repos_parent, use_all_repos=False)
     if not repos:
@@ -1151,33 +483,33 @@ def _select_project_for_changelog(repos_parent: str) -> Optional[tuple[str, str,
         return None
 
     if len(projects) == 1:
-        project_name, repo = projects[0]
-        print(f"{Colors.CYAN}Using project: {project_name}{Colors.ENDC}")
+        project = projects[0]
+        print(f"{Colors.CYAN}Using project: {project.name}{Colors.ENDC}")
     else:
-        choices = [f"{name} ({repo})" for name, repo in projects]
+        choices = [f"{project.name} ({project.repo})" for project in projects]
         selection = questionary.select("Select project:", choices=choices).ask()
         if not selection:
             return None
-        project_name = selection.rsplit(' (', 1)[0]
-        repo = None
+        selected_name = selection.rsplit(' (', 1)[0]
+        project = None
         for p in projects:
-            if p[0] == project_name:
-                repo = p[1]
+            if p.name == selected_name:
+                project = p
                 break
-        if not repo:
+        if not project:
             return None
 
-    releases_path = get_releases_path(repos_parent, repo, project_name, create=False)
+    releases_path = project.get_releases_path(create=False)
     if not releases_path:
-        print(f"{Colors.FAIL}Error: Could not find releases path for '{project_name}'{Colors.ENDC}")
+        print(f"{Colors.FAIL}Error: Could not find releases path for '{project.name}'{Colors.ENDC}")
         return None
 
     changelog_path = find_changelog(releases_path)
     if not changelog_path:
-        print(f"{Colors.FAIL}Error: No changelog found for '{project_name}'{Colors.ENDC}")
+        print(f"{Colors.FAIL}Error: No changelog found for '{project.name}'{Colors.ENDC}")
         return None
 
-    return project_name, releases_path, changelog_path
+    return project, releases_path, changelog_path
 
 
 def _interactive_changelog_show(repos_parent: str) -> None:
@@ -1186,14 +518,14 @@ def _interactive_changelog_show(repos_parent: str) -> None:
     if not result:
         raise typer.Exit()
 
-    project_name, _, changelog_path = result
+    project, _, changelog_path = result
     version, is_unreleased, entries = get_latest_version_entries(changelog_path)
     if not version:
-        print(f"{Colors.CYAN}{project_name}: No versions found in changelog{Colors.ENDC}")
+        print(f"{Colors.CYAN}{project.name}: No versions found in changelog{Colors.ENDC}")
         raise typer.Exit()
 
     status = "(unreleased)" if is_unreleased else "(released)"
-    print(f"{Colors.HEADER}{project_name} - v{version} {status}:{Colors.ENDC}")
+    print(f"{Colors.HEADER}{project.name} - v{version} {status}:{Colors.ENDC}")
     if entries:
         for entry in entries:
             print(f"  {entry}")
@@ -1211,7 +543,7 @@ def _interactive_changelog_add(repos_parent: str) -> None:
     if not result:
         raise typer.Exit()
 
-    project_name, _, changelog_path = result
+    project, _, changelog_path = result
 
     is_unreleased, version = has_unreleased_version(changelog_path)
     if not is_unreleased:
@@ -1220,7 +552,7 @@ def _interactive_changelog_add(repos_parent: str) -> None:
         raise typer.Exit(1)
 
     if add_changelog_entry(changelog_path, message):
-        print(f"{Colors.GREEN}Added to {project_name} v{version}:{Colors.ENDC}")
+        print(f"{Colors.GREEN}Added to {project.name} v{version}:{Colors.ENDC}")
         print(f"  - {message}")
     else:
         print(f"{Colors.FAIL}Error: Failed to add changelog entry{Colors.ENDC}")
@@ -1328,12 +660,12 @@ def main_callback(
         selected = select_projects_interactive(repos_parent, 'init', use_all_repos=False)
         if not selected:
             raise typer.Exit()
-        _run_batch(selected, do_init_thunderstore, repos_parent=repos_parent)
+        _run_batch(selected, do_init_thunderstore)
     elif choice == "Package for releasing on Thunderstore":
         selected = select_projects_interactive(repos_parent, 'package', use_all_repos=False)
         if not selected:
             raise typer.Exit()
-        _run_batch(selected, do_package, repos_parent=repos_parent)
+        _run_batch(selected, do_package)
     elif choice == "View/package unreleased projects":
         unreleased(all_repos=False, non_interactive=False, package_all=False, package=None)
     elif choice == "Manage changelogs":
@@ -1389,8 +721,12 @@ def init_thunderstore_cmd(
         raise typer.Exit(1)
 
     if project_name:
+        project = find_project_by_name(repos_parent, project_name)
+        if not project:
+            print(f"{Colors.FAIL}Error: Could not find project '{project_name}'{Colors.ENDC}")
+            raise typer.Exit(1)
         do_init_thunderstore(
-            project_name, repos_parent,
+            project,
             namespace=namespace,
             description=description,
             website_url=website_url,
@@ -1403,7 +739,6 @@ def init_thunderstore_cmd(
             raise typer.Exit()
         _run_batch(
             selected, do_init_thunderstore,
-            repos_parent=repos_parent,
             namespace=namespace,
             description=description,
             website_url=website_url,
@@ -1434,8 +769,12 @@ def package(
         raise typer.Exit(1)
 
     if project_name:
+        project = find_project_by_name(repos_parent, project_name, require_metadata=True)
+        if not project:
+            print(f"{Colors.FAIL}Error: Could not find project '{project_name}'{Colors.ENDC}")
+            raise typer.Exit(1)
         do_package(
-            project_name, repos_parent, version,
+            project, version,
             non_interactive=non_interactive,
             allow_outdated_changelog=allow_outdated_changelog,
             overwrite=overwrite,
@@ -1449,7 +788,6 @@ def package(
             raise typer.Exit()
         _run_batch(
             selected, do_package,
-            repos_parent=repos_parent,
             version_override=version,
             non_interactive=non_interactive,
             allow_outdated_changelog=allow_outdated_changelog,
@@ -1481,10 +819,10 @@ def unreleased(
         print(f"{Colors.CYAN}No projects with Thunderstore metadata found.{Colors.ENDC}")
         raise typer.Exit()
 
-    unreleased_by_repo: dict[str, list[tuple[str, str, list[str]]]] = {}
+    unreleased_by_repo: dict[str, list[tuple[Project, str, list[str]]]] = {}
 
-    for project_name, repo in projects:
-        releases_path = get_releases_path(repos_parent, repo, project_name, create=False)
+    for project in projects:
+        releases_path = project.get_releases_path(create=False)
         if not releases_path:
             continue
 
@@ -1495,9 +833,9 @@ def unreleased(
         is_unreleased, version = has_unreleased_version(changelog_path)
         if is_unreleased:
             _, entries = get_unreleased_entries(changelog_path)
-            if repo not in unreleased_by_repo:
-                unreleased_by_repo[repo] = []
-            unreleased_by_repo[repo].append((project_name, version, entries))
+            if project.repo not in unreleased_by_repo:
+                unreleased_by_repo[project.repo] = []
+            unreleased_by_repo[project.repo].append((project, version, entries))
 
     if not unreleased_by_repo:
         print(f"{Colors.CYAN}No projects with unreleased changes found.{Colors.ENDC}")
@@ -1505,45 +843,42 @@ def unreleased(
 
     def print_unreleased_list(show_details: bool):
         print(f"{Colors.HEADER}Projects with unreleased changes:{Colors.ENDC}\n")
-        all_projects = []
-        for repo in sorted(unreleased_by_repo.keys()):
-            print(f"{Colors.BLUE}{repo}:{Colors.ENDC}")
-            for project_name, version, entries in sorted(unreleased_by_repo[repo]):
-                print(f"  {project_name} (v{version})")
-                all_projects.append((project_name, repo))
+        all_projects: list[Project] = []
+        for repo_name in sorted(unreleased_by_repo.keys()):
+            print(f"{Colors.BLUE}{repo_name}:{Colors.ENDC}")
+            for project, version, entries in sorted(unreleased_by_repo[repo_name], key=lambda x: x[0].name):
+                print(f"  {project.name} (v{version})")
+                all_projects.append(project)
                 if show_details and entries:
                     for entry in entries:
                         print(f"    {Colors.CYAN}{entry}{Colors.ENDC}")
             print()
         return all_projects
 
-    # Build list of all unreleased projects
-    all_unreleased: list[tuple[str, str]] = []
-    for repo in sorted(unreleased_by_repo.keys()):
-        for project_name, version, entries in sorted(unreleased_by_repo[repo]):
-            all_unreleased.append((project_name, repo))
+    all_unreleased: list[Project] = []
+    for repo_name in sorted(unreleased_by_repo.keys()):
+        for project, version, entries in sorted(unreleased_by_repo[repo_name], key=lambda x: x[0].name):
+            all_unreleased.append(project)
 
     # Handle non-interactive mode
     if non_interactive or package_all or package:
         print_unreleased_list(False)
 
         if package_all:
-            _run_batch(all_unreleased, do_package, repos_parent=repos_parent, non_interactive=True)
+            _run_batch(all_unreleased, do_package, non_interactive=True)
         elif package:
-            # Filter to specified projects
-            project_names = {name for name, repo in all_unreleased}
-            to_package = []
+            project_names = {p.name for p in all_unreleased}
+            to_package: list[Project] = []
             for proj in package:
                 if proj not in project_names:
                     print(f"{Colors.WARNING}Warning: '{proj}' not found in unreleased projects, skipping{Colors.ENDC}")
                     continue
-                for p_name, p_repo in all_unreleased:
-                    if p_name == proj:
-                        to_package.append((p_name, p_repo))
+                for p in all_unreleased:
+                    if p.name == proj:
+                        to_package.append(p)
                         break
             if to_package:
-                _run_batch(to_package, do_package, repos_parent=repos_parent, non_interactive=True)
-        # If just -y with no --package-all or --package, just list (already printed above)
+                _run_batch(to_package, do_package, non_interactive=True)
         return
 
     # Interactive mode
@@ -1574,12 +909,12 @@ def unreleased(
         break
 
     if selection.startswith("Package all"):
-        _run_batch(all_unreleased, do_package, repos_parent=repos_parent)
+        _run_batch(all_unreleased, do_package)
     else:
         if is_single_repo:
-            project_choices = [name for name, _ in all_unreleased]
+            project_choices = [p.name for p in all_unreleased]
         else:
-            project_choices = [f"{name} ({repo})" for name, repo in all_unreleased]
+            project_choices = [f"{p.name} ({p.repo})" for p in all_unreleased]
 
         selected = questionary.checkbox(
             "Select projects to package:",
@@ -1590,18 +925,21 @@ def unreleased(
             print(f"{Colors.CYAN}No projects selected.{Colors.ENDC}")
             raise typer.Exit()
 
-        to_package = []
+        to_package: list[Project] = []
         for sel in selected:
             if is_single_repo:
-                to_package.append((sel, repos[0]))
+                for p in all_unreleased:
+                    if p.name == sel:
+                        to_package.append(p)
+                        break
             else:
                 proj_name = sel.rsplit(' (', 1)[0]
-                for p_name, p_repo in all_unreleased:
-                    if p_name == proj_name:
-                        to_package.append((p_name, p_repo))
+                for p in all_unreleased:
+                    if p.name == proj_name:
+                        to_package.append(p)
                         break
 
-        _run_batch(to_package, do_package, repos_parent=repos_parent)
+        _run_batch(to_package, do_package)
 
 
 @app.command()
@@ -1713,52 +1051,45 @@ def changelog_add(
             raise typer.Exit(1)
 
         if len(projects) == 1:
-            project_name, repo = projects[0]
-            print(f"{Colors.CYAN}Using project: {project_name}{Colors.ENDC}")
+            project = projects[0]
+            print(f"{Colors.CYAN}Using project: {project.name}{Colors.ENDC}")
         elif non_interactive:
             print(f"{Colors.FAIL}Error: Non-interactive mode requires specifying project name.{Colors.ENDC}")
             print(f"Usage: bt changelog add \"ProjectName\" \"Message\"")
             print(f"\nAvailable projects:")
-            for name, r in projects:
-                print(f"  - {name}")
+            for p in projects:
+                print(f"  - {p.name}")
             raise typer.Exit(1)
         else:
-            choices = [f"{name} ({repo})" for name, repo in projects]
+            choices = [f"{p.name} ({p.repo})" for p in projects]
             selection = questionary.select("Select project:", choices=choices).ask()
             if not selection:
                 raise typer.Exit()
-            project_name = selection.rsplit(' (', 1)[0]
-            repo = None
+            selected_name = selection.rsplit(' (', 1)[0]
+            project = None
             for p in projects:
-                if p[0] == project_name:
-                    repo = p[1]
+                if p.name == selected_name:
+                    project = p
                     break
-            if not repo:
-                print(f"{Colors.FAIL}Error: Could not find project '{project_name}'{Colors.ENDC}")
+            if not project:
+                print(f"{Colors.FAIL}Error: Could not find project '{selected_name}'{Colors.ENDC}")
                 raise typer.Exit(1)
     else:
         project_name = arg1
         message = arg2
-        repo = None
-        for r in os.listdir(repos_parent):
-            repo_path = os.path.join(repos_parent, r)
-            if os.path.isdir(repo_path):
-                potential_project = os.path.join(repo_path, project_name)
-                if os.path.exists(potential_project) and os.path.isdir(potential_project):
-                    repo = r
-                    break
-        if not repo:
+        project = find_project_by_name(repos_parent, project_name)
+        if not project:
             print(f"{Colors.FAIL}Error: Could not find project '{project_name}'{Colors.ENDC}")
             raise typer.Exit(1)
 
-    releases_path = get_releases_path(repos_parent, repo, project_name, create=False)
+    releases_path = project.get_releases_path(create=False)
     if not releases_path:
-        print(f"{Colors.FAIL}Error: Could not find releases path for '{project_name}'{Colors.ENDC}")
+        print(f"{Colors.FAIL}Error: Could not find releases path for '{project.name}'{Colors.ENDC}")
         raise typer.Exit(1)
 
     changelog_path = find_changelog(releases_path)
     if not changelog_path:
-        print(f"{Colors.FAIL}Error: No changelog found for '{project_name}'{Colors.ENDC}")
+        print(f"{Colors.FAIL}Error: No changelog found for '{project.name}'{Colors.ENDC}")
         raise typer.Exit(1)
 
     is_unreleased, version = has_unreleased_version(changelog_path)
@@ -1768,7 +1099,7 @@ def changelog_add(
         raise typer.Exit(1)
 
     if add_changelog_entry(changelog_path, message):
-        print(f"{Colors.GREEN}Added to {project_name} v{version}:{Colors.ENDC}")
+        print(f"{Colors.GREEN}Added to {project.name} v{version}:{Colors.ENDC}")
         print(f"  - {message}")
     else:
         print(f"{Colors.FAIL}Error: Failed to add changelog entry{Colors.ENDC}")
@@ -1793,15 +1124,8 @@ def changelog_edit(
         project_name = None
 
     if project_name:
-        repo = None
-        for r in os.listdir(repos_parent):
-            repo_path = os.path.join(repos_parent, r)
-            if os.path.isdir(repo_path):
-                potential_project = os.path.join(repo_path, project_name)
-                if os.path.exists(potential_project) and os.path.isdir(potential_project):
-                    repo = r
-                    break
-        if not repo:
+        project = find_project_by_name(repos_parent, project_name)
+        if not project:
             print(f"{Colors.FAIL}Error: Could not find project '{project_name}'{Colors.ENDC}")
             raise typer.Exit(1)
     else:
@@ -1816,37 +1140,37 @@ def changelog_edit(
             raise typer.Exit(1)
 
         if len(projects) == 1:
-            project_name, repo = projects[0]
-            print(f"{Colors.CYAN}Using project: {project_name}{Colors.ENDC}")
+            project = projects[0]
+            print(f"{Colors.CYAN}Using project: {project.name}{Colors.ENDC}")
         elif non_interactive:
             print(f"{Colors.FAIL}Error: Non-interactive mode requires a project name argument.{Colors.ENDC}")
             print(f"\nAvailable projects:")
-            for name, r in projects:
-                print(f"  - {name}")
+            for p in projects:
+                print(f"  - {p.name}")
             raise typer.Exit(1)
         else:
-            choices = [f"{name} ({repo})" for name, repo in projects]
+            choices = [f"{p.name} ({p.repo})" for p in projects]
             selection = questionary.select("Select project:", choices=choices).ask()
             if not selection:
                 raise typer.Exit()
-            project_name = selection.rsplit(' (', 1)[0]
-            repo = None
+            selected_name = selection.rsplit(' (', 1)[0]
+            project = None
             for p in projects:
-                if p[0] == project_name:
-                    repo = p[1]
+                if p.name == selected_name:
+                    project = p
                     break
-            if not repo:
-                print(f"{Colors.FAIL}Error: Could not find project '{project_name}'{Colors.ENDC}")
+            if not project:
+                print(f"{Colors.FAIL}Error: Could not find project '{selected_name}'{Colors.ENDC}")
                 raise typer.Exit(1)
 
-    releases_path = get_releases_path(repos_parent, repo, project_name, create=False)
+    releases_path = project.get_releases_path(create=False)
     if not releases_path:
-        print(f"{Colors.FAIL}Error: Could not find releases path for '{project_name}'{Colors.ENDC}")
+        print(f"{Colors.FAIL}Error: Could not find releases path for '{project.name}'{Colors.ENDC}")
         raise typer.Exit(1)
 
     changelog_path = find_changelog(releases_path)
     if not changelog_path:
-        print(f"{Colors.FAIL}Error: No changelog found for '{project_name}'{Colors.ENDC}")
+        print(f"{Colors.FAIL}Error: No changelog found for '{project.name}'{Colors.ENDC}")
         raise typer.Exit(1)
 
     fallback = 'notepad' if is_windows() else 'nano'
@@ -1885,15 +1209,8 @@ def changelog_show(
         project_name = None
 
     if project_name:
-        repo = None
-        for r in os.listdir(repos_parent):
-            repo_path = os.path.join(repos_parent, r)
-            if os.path.isdir(repo_path):
-                potential_project = os.path.join(repo_path, project_name)
-                if os.path.exists(potential_project) and os.path.isdir(potential_project):
-                    repo = r
-                    break
-        if not repo:
+        project = find_project_by_name(repos_parent, project_name)
+        if not project:
             print(f"{Colors.FAIL}Error: Could not find project '{project_name}'{Colors.ENDC}")
             raise typer.Exit(1)
     else:
@@ -1908,59 +1225,57 @@ def changelog_show(
             raise typer.Exit(1)
 
         if len(projects) == 1:
-            project_name, repo = projects[0]
-            print(f"{Colors.CYAN}Using project: {project_name}{Colors.ENDC}")
+            project = projects[0]
+            print(f"{Colors.CYAN}Using project: {project.name}{Colors.ENDC}")
         elif non_interactive:
             print(f"{Colors.FAIL}Error: Non-interactive mode requires a project name argument.{Colors.ENDC}")
             print(f"\nAvailable projects:")
-            for name, r in projects:
-                print(f"  - {name}")
+            for p in projects:
+                print(f"  - {p.name}")
             raise typer.Exit(1)
         else:
-            # Check which projects have unreleased versions
             choices = []
-            project_map = {}  # Map display string to (name, repo)
+            project_map: dict[str, Project] = {}
             unreleased_set = set()
-            for name, r in projects:
-                rel_path = get_releases_path(repos_parent, r, name, create=False)
+            for p in projects:
+                rel_path = p.get_releases_path(create=False)
                 is_unreleased = False
                 if rel_path:
                     cl_path = find_changelog(rel_path)
                     if cl_path:
                         is_unreleased, _ = has_unreleased_version(cl_path)
                 if is_unreleased:
-                    display = f"{name} ({r}) *"
+                    display = f"{p.name} ({p.repo}) *"
                     unreleased_set.add(display)
                 else:
-                    display = f"{name} ({r})"
+                    display = f"{p.name} ({p.repo})"
                 choices.append(display)
-                project_map[display] = (name, r)
+                project_map[display] = p
 
-            # Sort with unreleased projects first
             choices.sort(key=lambda x: (x not in unreleased_set, x))
 
             selection = questionary.select("Select project (* = unreleased):", choices=choices).ask()
             if not selection:
                 raise typer.Exit()
-            project_name, repo = project_map[selection]
+            project = project_map[selection]
 
-    releases_path = get_releases_path(repos_parent, repo, project_name, create=False)
+    releases_path = project.get_releases_path(create=False)
     if not releases_path:
-        print(f"{Colors.FAIL}Error: Could not find releases path for '{project_name}'{Colors.ENDC}")
+        print(f"{Colors.FAIL}Error: Could not find releases path for '{project.name}'{Colors.ENDC}")
         raise typer.Exit(1)
 
     changelog_path = find_changelog(releases_path)
     if not changelog_path:
-        print(f"{Colors.FAIL}Error: No changelog found for '{project_name}'{Colors.ENDC}")
+        print(f"{Colors.FAIL}Error: No changelog found for '{project.name}'{Colors.ENDC}")
         raise typer.Exit(1)
 
     version, is_unreleased, entries = get_latest_version_entries(changelog_path)
     if not version:
-        print(f"{Colors.CYAN}{project_name}: No versions found in changelog{Colors.ENDC}")
+        print(f"{Colors.CYAN}{project.name}: No versions found in changelog{Colors.ENDC}")
         raise typer.Exit()
 
     status = "(unreleased)" if is_unreleased else "(released)"
-    print(f"{Colors.HEADER}{project_name} - v{version} {status}:{Colors.ENDC}")
+    print(f"{Colors.HEADER}{project.name} - v{version} {status}:{Colors.ENDC}")
     if entries:
         for entry in entries:
             print(f"  {entry}")
@@ -2119,7 +1434,7 @@ def config_add_repo(
             print(f"Run from within a repo directory, or specify: bt config add-repo <name>")
             raise typer.Exit(1)
     else:
-        repo_name = name
+        repo_name = os.path.basename(os.path.normpath(name))
 
     config = load_config()
     repos = config.get('repos', [])
