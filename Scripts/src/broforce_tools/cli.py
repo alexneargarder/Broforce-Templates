@@ -193,6 +193,7 @@ def do_create_project(
     output_repo: Optional[str],
     non_interactive: bool = False,
     no_thunderstore: bool = False,
+    with_rocketlib: bool = False,
 ) -> None:
     """Create a new project from templates."""
     template_dir = get_templates_dir()
@@ -304,6 +305,14 @@ def do_create_project(
     # Check for missing required values in non-interactive mode
     check_missing_required(missing)
 
+    # Optional: add RocketLib dependency for mods
+    if not with_rocketlib and not non_interactive and template_type == "mod":
+        with_rocketlib = questionary.confirm(
+            "Add RocketLib dependency?", default=False
+        ).ask()
+        if with_rocketlib is None:
+            raise typer.Exit()
+
     templatePath = os.path.join(template_dir, source_template_name)
     output_repo_path = os.path.join(repos_parent, output_repo_name)
 
@@ -396,6 +405,32 @@ def do_create_project(
             bromaker_version = dep_versions.get('BroMaker', '2.6.0')
 
             find_replace(newRepoPath, "BROMAKER_VERSION", bromaker_version, "*.json")
+
+        if with_rocketlib and type_info["has_code"]:
+            csproj_path = None
+            for root, dirs, files in os.walk(newRepoPath):
+                for f in files:
+                    if f.endswith('.csproj'):
+                        csproj_path = os.path.join(root, f)
+                        break
+                if csproj_path:
+                    break
+            if csproj_path:
+                with open(csproj_path, 'r', encoding='utf-8') as f:
+                    content = f.read()
+                rocketlib_ref = (
+                    '    <Reference Include="RocketLib">\n'
+                    '      <HintPath>$(RocketLibPath)</HintPath>\n'
+                    '    </Reference>\n'
+                )
+                # Insert before the closing </ItemGroup> of the Reference block
+                content = content.replace(
+                    '    <Reference Include="UnityModManager">',
+                    rocketlib_ref + '    <Reference Include="UnityModManager">',
+                )
+                with open(csproj_path, 'w', encoding='utf-8') as f:
+                    f.write(content)
+                print(f"{Colors.GREEN}Added RocketLib reference{Colors.ENDC}")
 
         changelogPath = os.path.join(newReleaseFolder, 'Changelog.md')
         changelogContent = '''## v1.0.0 (unreleased)
@@ -695,10 +730,11 @@ def create(
     output_repo: Optional[str] = typer.Option(None, "-o", "--output-repo", help="Target repository", autocompletion=_complete_repos),
     non_interactive: bool = typer.Option(False, "-y", "--non-interactive", help="Fail instead of prompting for input"),
     no_thunderstore: bool = typer.Option(False, "--no-thunderstore", help="Skip Thunderstore metadata setup"),
+    with_rocketlib: bool = typer.Option(False, "--with-rocketlib", "-r", help="Add RocketLib dependency"),
 ):
     """Create a new project from templates."""
     init_colors()
-    do_create_project(type, name, author, output_repo, non_interactive, no_thunderstore)
+    do_create_project(type, name, author, output_repo, non_interactive, no_thunderstore, with_rocketlib)
 
 
 @app.command("init-thunderstore")
