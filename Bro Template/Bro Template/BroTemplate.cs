@@ -1,20 +1,13 @@
-﻿using System;
-using System.Collections.Generic;
-using BroMakerLib;
+﻿using BroMakerLib;
 using BroMakerLib.CustomObjects.Bros;
-using BroMakerLib.Loggers;
-using System.IO;
-using System.Reflection;
 using UnityEngine;
 
 namespace Bro_Template
 {
-    [HeroPreset("Bro Template", HeroType.Rambro)]
+    [HeroPreset( "Bro Template", HeroType.Rambro )]
     public class BroTemplate : CustomHero
     {
         // General
-        protected bool acceptedDeath = false;
-        bool wasInvulnerable = false;
 
         // Primary
 
@@ -22,52 +15,21 @@ namespace Bro_Template
 
         // Special
 
-
         #region General
         protected override void Start()
         {
-            base.Start();
+            useCustomMelee = true;
 
-            // Needed to have custom melee functions called, actual type is irrelevant
-            this.meleeType = MeleeType.Disembowel;
+            base.Start();
         }
 
         protected override void Update()
         {
             base.Update();
             // Don't run any code past this point if the character is dead
-            if (this.acceptedDeath)
+            if ( acceptedDeath )
             {
-                if (this.health <= 0 && !this.WillReviveAlready)
-                {
-                    return;
-                }
-                // Revived
-                else
-                {
-                    this.acceptedDeath = false;
-                }
-            }
-
-            if (this.invulnerable)
-            {
-                this.wasInvulnerable = true;
-            }
-
-            // Check if invulnerability ran out
-            if (this.wasInvulnerable && !this.invulnerable)
-            {
-                // Fix any not currently displayed textures
-                this.wasInvulnerable = false;
-            }
-
-            // Check if character has died
-            if (base.actionState == ActionState.Dead && !this.acceptedDeath)
-            {
-                if (!this.WillReviveAlready)
-                {
-                    this.acceptedDeath = true;
-                }
+                return;
             }
         }
         #endregion
@@ -78,122 +40,126 @@ namespace Bro_Template
         #region Melee
         protected override void StartCustomMelee()
         {
-            if (this.CanStartNewMelee())
+            if ( CanStartNewMelee() )
             {
-                base.frame = 1;
-                base.counter = -0.05f;
-                this.AnimateMelee();
+                frame = 1;
+                counter = -0.05f;
+                AnimateMelee();
             }
-            else if (this.CanStartMeleeFollowUp())
+            else if ( CanStartMeleeFollowUp() )
             {
-                this.meleeFollowUp = true;
+                meleeFollowUp = true;
             }
-            if (!this.jumpingMelee)
+
+            if ( !jumpingMelee )
             {
-                this.dashingMelee = true;
-                this.xI = (float)base.Direction * this.speed;
+                dashingMelee = true;
+                xI = (float)Direction * speed;
             }
-            this.StartMeleeCommon();
+
+            StartMeleeCommon();
         }
 
         protected override void AnimateCustomMelee()
         {
-            this.AnimateMeleeCommon();
-            int num = 25 + Mathf.Clamp(base.frame, 0, 6);
+            AnimateMeleeCommon();
+            int num = 25 + Mathf.Clamp( frame, 0, 6 );
             int num2 = 1;
-            if (!this.standingMelee)
+            if ( !standingMelee )
             {
-                if (this.jumpingMelee)
+                if ( jumpingMelee )
                 {
-                    num = 17 + Mathf.Clamp(base.frame, 0, 6);
+                    num = 17 + Mathf.Clamp( frame, 0, 6 );
                     num2 = 6;
                 }
-                else if (this.dashingMelee)
+                else if ( dashingMelee )
                 {
-                    num = 17 + Mathf.Clamp(base.frame, 0, 6);
+                    num = 17 + Mathf.Clamp( frame, 0, 6 );
                     num2 = 6;
-                    if (base.frame == 4)
+                    if ( frame == 4 )
                     {
-                        base.counter -= 0.0334f;
+                        counter -= 0.0334f;
                     }
-                    else if (base.frame == 5)
+                    else if ( frame == 5 )
                     {
-                        base.counter -= 0.0334f;
+                        counter -= 0.0334f;
                     }
                 }
             }
-            this.sprite.SetLowerLeftPixel((float)(num * this.spritePixelWidth), (float)(num2 * this.spritePixelHeight));
-            if (base.frame == 3)
+
+            sprite.SetLowerLeftPixel( (float)( num * spritePixelWidth ), (float)( num2 * spritePixelHeight ) );
+            if ( frame == 3 )
             {
-                base.counter -= 0.066f;
-                this.PerformKnifeMeleeAttack(true, true);
+                counter -= 0.066f;
+                PerformKnifeMeleeAttack( true, true );
             }
-            else if (base.frame > 3 && !this.meleeHasHit)
+            else if ( frame > 3 && !meleeHasHit )
             {
-                this.PerformKnifeMeleeAttack(false, false);
+                PerformKnifeMeleeAttack( false, false );
             }
-            if (base.frame >= 6)
+
+            if ( frame >= 6 )
             {
-                base.frame = 0;
-                this.CancelMelee();
+                frame = 0;
+                CancelMelee();
             }
         }
 
         protected override void RunCustomMeleeMovement()
         {
-            if (!this.useNewKnifingFrames)
+            if ( !useNewKnifingFrames )
             {
-                if (base.Y > this.groundHeight + 1f)
+                if ( Y > groundHeight + 1f )
                 {
-                    this.ApplyFallingGravity();
+                    ApplyFallingGravity();
                 }
             }
-            else if (this.jumpingMelee)
+            else if ( jumpingMelee )
             {
-                this.ApplyFallingGravity();
-                if (this.yI < this.maxFallSpeed)
+                ApplyFallingGravity();
+                if ( yI < maxFallSpeed )
                 {
-                    this.yI = this.maxFallSpeed;
+                    yI = maxFallSpeed;
                 }
             }
-            else if (this.dashingMelee)
+            else if ( dashingMelee )
             {
-                if (base.frame <= 1)
+                if ( frame <= 1 )
                 {
-                    this.xI = 0f;
-                    this.yI = 0f;
+                    xI = 0f;
+                    yI = 0f;
                 }
-                else if (base.frame <= 3)
+                else if ( frame <= 3 )
                 {
-                    if (this.meleeChosenUnit == null)
+                    if ( meleeChosenUnit == null )
                     {
-                        if (!this.isInQuicksand)
+                        if ( !isInQuicksand )
                         {
-                            this.xI = this.speed * 1f * base.transform.localScale.x;
+                            xI = speed * 1f * transform.localScale.x;
                         }
-                        this.yI = 0f;
+                        yI = 0f;
                     }
-                    else if (!this.isInQuicksand)
+                    else if ( !isInQuicksand )
                     {
-                        this.xI = this.speed * 0.5f * base.transform.localScale.x + (this.meleeChosenUnit.X - base.X) * 6f;
+                        xI = speed * 0.5f * transform.localScale.x + ( meleeChosenUnit.X - X ) * 6f;
                     }
                 }
-                else if (base.frame <= 5)
+                else if ( frame <= 5 )
                 {
-                    if (!this.isInQuicksand)
+                    if ( !isInQuicksand )
                     {
-                        this.xI = this.speed * 0.3f * base.transform.localScale.x;
+                        xI = speed * 0.3f * transform.localScale.x;
                     }
-                    this.ApplyFallingGravity();
+                    ApplyFallingGravity();
                 }
                 else
                 {
-                    this.ApplyFallingGravity();
+                    ApplyFallingGravity();
                 }
             }
-            else if (base.Y > this.groundHeight + 1f)
+            else if ( Y > groundHeight + 1f )
             {
-                this.CancelMelee();
+                CancelMelee();
             }
         }
         #endregion
