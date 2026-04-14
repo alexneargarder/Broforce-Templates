@@ -8,6 +8,7 @@ REPOS_DIR="$(dirname "$(dirname "$SCRIPT_DIR")")"
 TARGETS_FILE="$SCRIPT_DIR/BroforceModBuild.targets"
 EXAMPLE_PROPS="$SCRIPT_DIR/LocalBroforcePath.example.props"
 MAKEFILE_COMMON="$SCRIPT_DIR/Makefile.common"
+CLEANUP_SETTINGS="$SCRIPT_DIR/BroforceMods.DotSettings"
 
 echo "Syncing build files from Broforce-Templates..."
 echo ""
@@ -34,6 +35,14 @@ find "$REPOS_DIR" -maxdepth 3 -name "Makefile.common" -type f 2>/dev/null | whil
     makefile_rel="${makefile#$REPOS_DIR/}"
     cp "$MAKEFILE_COMMON" "$makefile"
     echo "  $makefile_rel"
+done
+
+# Sync BroforceMods.DotSettings
+find "$REPOS_DIR" -maxdepth 3 -name "BroforceMods.DotSettings" -type f 2>/dev/null | while read -r settings; do
+    [[ "$settings" == "$CLEANUP_SETTINGS" ]] && continue
+    settings_rel="${settings#$REPOS_DIR/}"
+    cp "$CLEANUP_SETTINGS" "$settings"
+    echo "  $settings_rel"
 done
 
 echo ""
