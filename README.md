@@ -14,7 +14,7 @@ Create this file in your repo's root directory:
   <PropertyGroup>
     <BroforcePath>C:\Program Files (x86)\Steam\steamapps\common\Broforce</BroforcePath>
     <!-- Point these to your installed mods (Thunderstore structure) -->
-    <BroMakerLibPath>$(BroforcePath)\Mods\BroMaker-BroMaker\BroMaker\BroMakerLib.dll</BroMakerLibPath>
+    <BroMakerLibPath>$(BroforcePath)\Mods\BroMaker-BroMaker\BroMakerLib\BroMakerLib.dll</BroMakerLibPath>
     <RocketLibPath>$(BroforcePath)\Mods\RocketLib-RocketLib\RocketLib\RocketLib.dll</RocketLibPath>
     <!-- If building from source repos: -->
     <!-- <BroMakerLibPath>C:\Users\YourName\repos\Bro-Maker\BroMakerLib\_ModContent\BroMakerLib.dll</BroMakerLibPath> -->
