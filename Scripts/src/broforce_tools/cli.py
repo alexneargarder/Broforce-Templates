@@ -13,7 +13,7 @@ import typer
 from . import __version__
 from .colors import Colors, init_colors
 from .paths import TemplatesDirNotFound
-from .config import get_config_file, get_configured_repos, get_nix_config_file, load_config, save_config
+from .config import get_config_file, get_configured_repos, get_defaults, get_nix_config_file, load_config, save_config
 from .paths import get_repos_parent, get_templates_dir, get_config_dir, is_windows
 from .project_types import PROJECT_TYPES, get_type_names, get_display_names
 from .project import (
@@ -242,6 +242,8 @@ def do_create_project(
                 output_repo_name = questionary.text(
                     "Enter repository name:"
                 ).ask()
+                if output_repo_name is None:
+                    raise typer.Exit()
                 if not output_repo_name:
                     print(f"{Colors.FAIL}Error: Repository name cannot be empty.{Colors.ENDC}")
                     raise typer.Exit(1)
@@ -257,15 +259,24 @@ def do_create_project(
     elif non_interactive:
         missing.append(("--type / -t", f"Project type ({', '.join(get_type_names())})"))
     else:
+        type_choices = [
+            questionary.Choice(
+                title=display,
+                value=display.lower(),
+                shortcut_key=display[0].lower(),
+            )
+            for display in get_display_names()
+        ]
         choice = questionary.select(
             "What would you like to create?",
-            choices=get_display_names()
+            choices=type_choices,
+            use_shortcuts=True,
         ).ask()
 
         if not choice:
             raise typer.Exit()
 
-        template_type = choice.lower()
+        template_type = choice
 
     type_info = PROJECT_TYPES.get(template_type) if template_type else None
     if template_type and not type_info:
@@ -277,30 +288,96 @@ def do_create_project(
     else:
         source_template_name = ""
 
+    templatePath = os.path.join(template_dir, source_template_name)
+    output_repo_path = os.path.join(repos_parent, output_repo_name)
+
+    if not os.path.exists(output_repo_path):
+        print(f"{Colors.FAIL}Error: Output repository does not exist: {output_repo_path}{Colors.ENDC}")
+        print(f"{Colors.WARNING}Please ensure the repository '{output_repo_name}' exists in: {repos_parent}{Colors.ENDC}")
+        raise typer.Exit(1)
+
+    releases_dir = os.path.join(output_repo_path, 'Releases')
+    release_dir = os.path.join(output_repo_path, 'Release')
+    if os.path.isdir(release_dir) and not os.path.isdir(releases_dir):
+        base_release = release_dir
+    else:
+        base_release = releases_dir
+
+    if not os.path.exists(templatePath):
+        print(f"{Colors.FAIL}Error: Template directory not found: {templatePath}{Colors.ENDC}")
+        print(f"Please ensure the '{source_template_name}' directory exists in your repository.")
+        raise typer.Exit(1)
+
+    def _name_conflicts(candidate: str) -> list[str]:
+        """Return human-readable paths that already exist for this name, or []."""
+        conflicts = []
+        project_path = os.path.join(output_repo_path, candidate)
+        release_path = os.path.join(base_release, candidate)
+        if os.path.exists(project_path):
+            conflicts.append(f"project directory: {project_path}")
+        if os.path.exists(release_path):
+            conflicts.append(f"release directory: {release_path}")
+        return conflicts
+
+    def _print_name_error(candidate: str, conflicts: list[str]) -> None:
+        print(f"{Colors.FAIL}Error: '{candidate}' already exists:{Colors.ENDC}")
+        for c in conflicts:
+            print(f"{Colors.FAIL}  - {c}{Colors.ENDC}")
+
     if name:
-        newName = name
+        newName = name.strip()
+        if not newName:
+            print(f"{Colors.FAIL}Error: Name cannot be empty.{Colors.ENDC}")
+            raise typer.Exit(1)
+        conflicts = _name_conflicts(newName)
+        if conflicts:
+            _print_name_error(newName, conflicts)
+            raise typer.Exit(1)
     elif non_interactive:
         missing.append(("--name / -n", "Project name"))
         newName = ""
     else:
-        newName = questionary.text(f"Enter {template_type} name:").ask()
-        if not newName:
-            print(f"{Colors.FAIL}Error: Name cannot be empty.{Colors.ENDC}")
-            raise typer.Exit(1)
+        while True:
+            answer = questionary.text(f"Enter {template_type} name:").ask()
+            if answer is None:
+                raise typer.Exit()
+            candidate = answer.strip()
+            if not candidate:
+                print(f"{Colors.FAIL}Error: Name cannot be empty.{Colors.ENDC}")
+                continue
+            conflicts = _name_conflicts(candidate)
+            if conflicts:
+                _print_name_error(candidate, conflicts)
+                continue
+            newName = candidate
+            break
 
     newNameWithUnderscore = newName.replace(' ', '_')
     newNameNoSpaces = newName.replace(' ', '')
 
     if author:
         authorName = author
-    elif non_interactive:
-        missing.append(("--author / -a", "Author name"))
-        authorName = ""
     else:
-        authorName = questionary.text("Enter author name (e.g., YourName):").ask()
-        if not authorName:
-            print(f"{Colors.FAIL}Error: Author name cannot be empty.{Colors.ENDC}")
-            raise typer.Exit(1)
+        default_author = get_defaults().get('namespace', '')
+        if non_interactive:
+            if default_author:
+                authorName = default_author
+            else:
+                missing.append(("--author / -a", "Author name"))
+                authorName = ""
+        else:
+            if default_author:
+                authorName = questionary.text(
+                    "Enter author name:",
+                    default=default_author,
+                ).ask()
+            else:
+                authorName = questionary.text("Enter author name:").ask()
+            if authorName is None:
+                raise typer.Exit()
+            if not authorName:
+                print(f"{Colors.FAIL}Error: Author name cannot be empty.{Colors.ENDC}")
+                raise typer.Exit(1)
 
     # Check for missing required values in non-interactive mode
     check_missing_required(missing)
@@ -313,13 +390,8 @@ def do_create_project(
         if with_rocketlib is None:
             raise typer.Exit()
 
-    templatePath = os.path.join(template_dir, source_template_name)
-    output_repo_path = os.path.join(repos_parent, output_repo_name)
-
-    if not os.path.exists(output_repo_path):
-        print(f"{Colors.FAIL}Error: Output repository does not exist: {output_repo_path}{Colors.ENDC}")
-        print(f"{Colors.WARNING}Please ensure the repository '{output_repo_name}' exists in: {repos_parent}{Colors.ENDC}")
-        raise typer.Exit(1)
+    newReleaseFolder = os.path.join(base_release, newName)
+    newRepoPath = os.path.join(output_repo_path, newName)
 
     if type_info and type_info["has_code"] and output_repo_path != template_dir:
         output_scripts_dir = os.path.join(output_repo_path, 'Scripts')
@@ -348,30 +420,6 @@ def do_create_project(
                 print(f"{Colors.WARNING}Warning: Could not copy BroforceModBuild.targets (file in use){Colors.ENDC}")
         else:
             print(f"{Colors.WARNING}Warning: BroforceModBuild.targets not found in template repo{Colors.ENDC}")
-
-    releases_dir = os.path.join(output_repo_path, 'Releases')
-    release_dir = os.path.join(output_repo_path, 'Release')
-    if os.path.isdir(release_dir) and not os.path.isdir(releases_dir):
-        base_release = release_dir
-    else:
-        base_release = releases_dir
-    newReleaseFolder = os.path.join(base_release, newName)
-    newRepoPath = os.path.join(output_repo_path, newName)
-
-    if not os.path.exists(templatePath):
-        print(f"{Colors.FAIL}Error: Template directory not found: {templatePath}{Colors.ENDC}")
-        print(f"Please ensure the '{source_template_name}' directory exists in your repository.")
-        raise typer.Exit(1)
-
-    if os.path.exists(newReleaseFolder):
-        print(f"{Colors.FAIL}Error: Release directory already exists: {newReleaseFolder}{Colors.ENDC}")
-        print(f"Please choose a different {template_type} name or remove the existing directory.")
-        raise typer.Exit(1)
-
-    if os.path.exists(newRepoPath):
-        print(f"{Colors.FAIL}Error: Repository directory already exists: {newRepoPath}{Colors.ENDC}")
-        print(f"Please choose a different {template_type} name or remove the existing directory.")
-        raise typer.Exit(1)
 
     try:
         os.makedirs(newReleaseFolder, exist_ok=True)
@@ -669,56 +717,63 @@ def main_callback(
 
     print(f"{Colors.HEADER}Broforce Mod Tools{Colors.ENDC}\n")
 
+    types_label = ' / '.join(get_type_names())
     choice = questionary.select(
         "What would you like to do?",
         choices=[
-            f"Create new {' / '.join(get_type_names())} project",
-            "Setup Thunderstore metadata for an existing project",
-            "Package for releasing on Thunderstore",
-            "View/package unreleased projects",
-            "Manage changelogs",
-            "Manage configuration",
-            "Show dependency versions",
-            "Show help"
-        ]
+            questionary.Choice(title=f"Create      new {types_label} project", value="create", shortcut_key="c"),
+            questionary.Choice(title="Init        set up Thunderstore metadata", value="init", shortcut_key="i"),
+            questionary.Choice(title="Package     build Thunderstore ZIP", value="package", shortcut_key="p"),
+            questionary.Choice(title="Unreleased  list/package unreleased projects", value="unreleased", shortcut_key="u"),
+            questionary.Choice(title="Changelog   add/show/edit changelog entries", value="changelog", shortcut_key="l"),
+            questionary.Choice(title="Config      view or edit configuration", value="config", shortcut_key="g"),
+            questionary.Choice(title="Deps        show dependency versions", value="deps", shortcut_key="d"),
+            questionary.Choice(title="Help", value="help", shortcut_key="h"),
+        ],
+        use_shortcuts=True,
     ).ask()
 
     if not choice:
         raise typer.Exit()
 
-    if choice == "Show help":
+    if choice == "help":
         print(ctx.get_help())
         raise typer.Exit()
-    elif choice.startswith("Create new"):
+    elif choice == "create":
         do_create_project(None, None, None, None)
-    elif choice == "Setup Thunderstore metadata for an existing project":
+    elif choice == "init":
         selected = select_projects_interactive(repos_parent, 'init', use_all_repos=False)
         if not selected:
             raise typer.Exit()
         _run_batch(selected, do_init_thunderstore)
-    elif choice == "Package for releasing on Thunderstore":
+    elif choice == "package":
         selected = select_projects_interactive(repos_parent, 'package', use_all_repos=False)
         if not selected:
             raise typer.Exit()
         _run_batch(selected, do_package)
-    elif choice == "View/package unreleased projects":
+    elif choice == "unreleased":
         unreleased(all_repos=False, non_interactive=False, package_all=False, package=None)
-    elif choice == "Manage changelogs":
+    elif choice == "changelog":
         sub = questionary.select(
             "Changelog action:",
-            choices=["Add entry", "Show entries", "Edit in editor"]
+            choices=[
+                questionary.Choice(title="Add     new entry to unreleased version", value="add", shortcut_key="a"),
+                questionary.Choice(title="Show    current entries", value="show", shortcut_key="s"),
+                questionary.Choice(title="Edit    open in editor", value="edit", shortcut_key="e"),
+            ],
+            use_shortcuts=True,
         ).ask()
         if not sub:
             raise typer.Exit()
-        if sub == "Add entry":
+        if sub == "add":
             _interactive_changelog_add(repos_parent)
-        elif sub == "Show entries":
+        elif sub == "show":
             _interactive_changelog_show(repos_parent)
-        elif sub == "Edit in editor":
+        elif sub == "edit":
             _interactive_changelog_edit(repos_parent)
-    elif choice == "Manage configuration":
+    elif choice == "config":
         _interactive_config(repos_parent)
-    elif choice == "Show dependency versions":
+    elif choice == "deps":
         deps(refresh=False)
 
 
@@ -923,20 +978,21 @@ def unreleased(
     total_count = len(all_unreleased)
 
     while True:
-        toggle_label = "Hide details" if show_details else "Show details"
+        toggle_title = ("Toggle      hide changelog entries" if show_details
+                        else "Toggle      show changelog entries")
         choices = [
-            "Package selected projects",
-            f"Package all ({total_count} projects)",
-            toggle_label,
-            "Exit"
+            questionary.Choice(title="Package     selected projects only", value="select", shortcut_key="p"),
+            questionary.Choice(title=f"All         package every unreleased project ({total_count})", value="all", shortcut_key="a"),
+            questionary.Choice(title=toggle_title, value="toggle", shortcut_key="t"),
+            questionary.Choice(title="Exit", value="exit", shortcut_key="x"),
         ]
 
-        selection = questionary.select("What would you like to do?", choices=choices).ask()
+        selection = questionary.select("What would you like to do?", choices=choices, use_shortcuts=True).ask()
 
-        if not selection or selection == "Exit":
+        if not selection or selection == "exit":
             raise typer.Exit()
 
-        if selection in ("Show details", "Hide details"):
+        if selection == "toggle":
             show_details = not show_details
             print()
             all_unreleased = print_unreleased_list(show_details)
@@ -944,7 +1000,7 @@ def unreleased(
 
         break
 
-    if selection.startswith("Package all"):
+    if selection == "all":
         _run_batch(all_unreleased, do_package)
     else:
         if is_single_repo:
@@ -1605,21 +1661,22 @@ def _interactive_config(repos_parent: Optional[str]):
     sub = questionary.select(
         "Configuration action:",
         choices=[
-            "Show current config",
-            "Run setup wizard",
-            "Add a repo",
-            "Remove a repo",
-            "Edit config file",
-        ]
+            questionary.Choice(title="Show    current config", value="show", shortcut_key="s"),
+            questionary.Choice(title="Init    run setup wizard", value="init", shortcut_key="i"),
+            questionary.Choice(title="Add     a repo", value="add", shortcut_key="a"),
+            questionary.Choice(title="Remove  a repo", value="remove", shortcut_key="r"),
+            questionary.Choice(title="Edit    config file", value="edit", shortcut_key="e"),
+        ],
+        use_shortcuts=True,
     ).ask()
     if not sub:
         raise typer.Exit()
 
-    if sub == "Show current config":
+    if sub == "show":
         config_show()
-    elif sub == "Run setup wizard":
+    elif sub == "init":
         config_init(non_interactive=False)
-    elif sub == "Add a repo":
+    elif sub == "add":
         repo_name = detect_current_repo(repos_parent) if repos_parent else None
         if repo_name:
             use_current = questionary.confirm(
@@ -1631,7 +1688,7 @@ def _interactive_config(repos_parent: Optional[str]):
         name = questionary.text("Repo name:").ask()
         if name:
             config_add_repo(name=name)
-    elif sub == "Remove a repo":
+    elif sub == "remove":
         repos = get_configured_repos()
         if not repos:
             print(f"{Colors.WARNING}No repos configured{Colors.ENDC}")
@@ -1639,7 +1696,7 @@ def _interactive_config(repos_parent: Optional[str]):
         selection = questionary.select("Select repo to remove:", choices=repos).ask()
         if selection:
             config_remove_repo(name=selection)
-    elif sub == "Edit config file":
+    elif sub == "edit":
         config_edit()
 
 

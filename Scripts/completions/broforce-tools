@@ -30,7 +30,7 @@ _broforce_tools_completions()
                 local IFS=$'\n'
                 COMPREPLY=($(compgen -W "$(_get_projects repos)" -- "$cur"))
             elif [[ "$cur" == -* ]]; then
-                COMPREPLY=($(compgen -W "-t --type -n --name -a --author -o --output-repo -y --non-interactive --no-thunderstore --help" -- "$cur"))
+                COMPREPLY=($(compgen -W "-t --type -n --name -a --author -o --output-repo -r --with-rocketlib -y --non-interactive --no-thunderstore --help" -- "$cur"))
             fi
             ;;
         init-thunderstore)
@@ -96,6 +96,12 @@ _broforce_tools_completions()
                     set)
                         if [ $COMP_CWORD -eq 3 ]; then
                             COMPREPLY=($(compgen -W "repos_parent release_dir templates_dir defaults.namespace defaults.website_url" -- "$cur"))
+                        fi
+                        ;;
+                    remove-repo)
+                        if [ $COMP_CWORD -eq 3 ]; then
+                            local IFS=$'\n'
+                            COMPREPLY=($(compgen -W "$(_get_projects repos)" -- "$cur"))
                         fi
                         ;;
                     init)

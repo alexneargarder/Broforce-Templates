@@ -80,6 +80,7 @@ WRAPPER
               # Install bash completion
               mkdir -p $out/share/bash-completion/completions
               cp Scripts/completions/broforce-tools $out/share/bash-completion/completions/broforce-tools
+              ln -s broforce-tools $out/share/bash-completion/completions/bt
 
               # Patch completion script for Nix
               substituteInPlace $out/share/bash-completion/completions/broforce-tools \
@@ -112,9 +113,43 @@ WRAPPER
         in
         {
           default = pkgs.mkShell {
-            packages = [ pythonWithDevDeps ];
+            packages = [ pythonWithDevDeps pkgs.bash-completion ];
             shellHook = ''
-              export PYTHONPATH="$PWD/src:$PYTHONPATH"
+              # Find the live working tree. BROFORCE_SCRIPTS_DIR wins, else $PWD if
+              # it looks like the Scripts dir, else give up and stay in store mode.
+              if [ -n "''${BROFORCE_SCRIPTS_DIR:-}" ] && [ -d "$BROFORCE_SCRIPTS_DIR/src/broforce_tools" ]; then
+                SRC_DIR="$BROFORCE_SCRIPTS_DIR"
+              elif [ -d "$PWD/src/broforce_tools" ]; then
+                SRC_DIR="$PWD"
+              else
+                echo "warning: no live source found; set BROFORCE_SCRIPTS_DIR or cd to Scripts/"
+                SRC_DIR=""
+              fi
+              if [ -n "$SRC_DIR" ]; then
+                export PYTHONPATH="$SRC_DIR/src:$PYTHONPATH"
+                BT_DEV_BIN="$(mktemp -d -t bt-dev.XXXXXX)"
+                cat > "$BT_DEV_BIN/bt" <<EOF
+#!${pkgs.bash}/bin/bash
+exec ${pythonWithDevDeps}/bin/python -m broforce_tools "\$@"
+EOF
+                chmod +x "$BT_DEV_BIN/bt"
+                cp "$BT_DEV_BIN/bt" "$BT_DEV_BIN/broforce-tools"
+                export PATH="$BT_DEV_BIN:$PATH"
+                trap "rm -rf '$BT_DEV_BIN'" EXIT
+
+                # Load bash-completion and the live completion script so tab-complete
+                # picks up newly-added flags/commands without a rebuild.
+                if [ -n "''${BASH_VERSION:-}" ]; then
+                  if [ -z "''${BASH_COMPLETION_VERSINFO:-}" ] && [ -f ${pkgs.bash-completion}/share/bash-completion/bash_completion ]; then
+                    source ${pkgs.bash-completion}/share/bash-completion/bash_completion
+                  fi
+                  if [ -f "$SRC_DIR/completions/broforce-tools" ]; then
+                    source "$SRC_DIR/completions/broforce-tools"
+                  fi
+                fi
+
+                echo "bt (dev) → $SRC_DIR/src/broforce_tools"
+              fi
             '';
           };
         });
@@ -178,10 +213,39 @@ WRAPPER
                 description = "Default website URL for Thunderstore packages.";
               };
             };
+
+            developer = {
+              enable = mkEnableOption "bt-dev wrapper that runs the live source tree";
+
+              scriptsDir = mkOption {
+                type = types.str;
+                example = "/home/you/repos/Broforce-Templates/Scripts";
+                description = ''
+                  Absolute path to the Broforce-Templates/Scripts checkout.
+                  `bt-dev` will enter `nix develop` on this directory so `bt`
+                  runs the live source (no rebuild between edits).
+                '';
+              };
+            };
           };
 
           config = mkIf cfg.enable {
-            environment.systemPackages = [ cfg.package ];
+            environment.systemPackages = [ cfg.package ]
+              ++ lib.optional cfg.developer.enable (pkgs.writeShellScriptBin "bt-dev" ''
+                # Enter a dev shell where `bt` runs the live broforce-tools source.
+                # Edits to src/broforce_tools/*.py take effect on the next `bt` invocation.
+                #
+                # Usage:
+                #   bt-dev              # interactive shell with `bt` mapped to dev version
+                #   bt-dev <args>       # run a single `bt` command then exit
+                set -euo pipefail
+                export BROFORCE_SCRIPTS_DIR=${lib.escapeShellArg cfg.developer.scriptsDir}
+                if [ "$#" -eq 0 ]; then
+                  exec ${pkgs.nix}/bin/nix develop "$BROFORCE_SCRIPTS_DIR"
+                else
+                  exec ${pkgs.nix}/bin/nix develop "$BROFORCE_SCRIPTS_DIR" --command bt "$@"
+                fi
+              '');
 
             system.activationScripts.broforce-tools = let
               configJson = builtins.toJSON ({

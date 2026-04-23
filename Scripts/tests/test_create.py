@@ -90,12 +90,41 @@ class TestCreateMod:
         ])
         assert result.exit_code == 1
 
+    def test_duplicate_fails_before_creating_scripts_dir(self, create_env):
+        # Pre-create the release folder to simulate a prior run
+        (create_env["repo"] / "Releases" / "TestMod").mkdir(parents=True)
+        assert not (create_env["repo"] / "Scripts").exists()
+        result = runner.invoke(app, [
+            "create", "-t", "mod", "-n", "TestMod", "-a", "TestAuthor",
+            "-o", "TestRepo", "-y", "--no-thunderstore",
+        ])
+        assert result.exit_code == 1
+        # Scripts dir must not have been created before the duplicate check failed
+        assert not (create_env["repo"] / "Scripts").exists()
+
     def test_invalid_type_fails(self, create_env):
         result = runner.invoke(app, [
             "create", "-t", "invalid", "-n", "TestMod", "-a", "TestAuthor",
             "-o", "TestRepo", "-y", "--no-thunderstore",
         ])
         assert result.exit_code == 1
+
+    def test_uses_defaults_namespace_as_author(self, create_env, tmp_path):
+        config_dir = tmp_path / "config"
+        (config_dir / "config.json").write_text(json.dumps({
+            "repos": ["TestRepo"],
+            "repos_parent": str(create_env["repos_parent"]),
+            "defaults": {"namespace": "ConfigAuthor"},
+        }))
+        result = runner.invoke(app, [
+            "create", "-t", "mod", "-n", "DefaultAuthorMod",
+            "-o", "TestRepo", "-y", "--no-thunderstore",
+        ])
+        assert result.exit_code == 0
+        info = create_env["repo"] / "DefaultAuthorMod" / "DefaultAuthorMod" / "_ModContent" / "Info.json"
+        assert info.exists()
+        assert "ConfigAuthor" in info.read_text()
+        assert "AUTHOR_NAME" not in info.read_text()
 
 
 class TestCreateWithRocketLib:
