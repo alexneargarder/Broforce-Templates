@@ -441,14 +441,15 @@ def do_init_thunderstore(
         print(f"{Colors.FAIL}Error: Could not find releases path for '{project_name}'{Colors.ENDC}")
         raise typer.Exit(1)
 
-    print(f"{Colors.BLUE}Found project in: {project.repo}{Colors.ENDC}")
-
-    project_type = detect_project_type(project_path)
-    if not project_type:
-        print(f"{Colors.FAIL}Error: Could not detect project type (no metadata folder or missing Info.json/*.mod.json){Colors.ENDC}")
-        raise typer.Exit(1)
-
-    print(f"{Colors.BLUE}Detected project type: {project_type}{Colors.ENDC}")
+    if project.project_type:
+        project_type = project.project_type
+    else:
+        print(f"{Colors.BLUE}Found project in: {project.repo}{Colors.ENDC}")
+        project_type = detect_project_type(project_path)
+        if not project_type:
+            print(f"{Colors.FAIL}Error: Could not detect project type (no metadata folder or missing Info.json/*.mod.json){Colors.ENDC}")
+            raise typer.Exit(1)
+        print(f"{Colors.BLUE}Detected project type: {project_type}{Colors.ENDC}")
 
     defaults = get_defaults()
     default_namespace = defaults.get('namespace', '')

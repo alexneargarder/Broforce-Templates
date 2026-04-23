@@ -57,7 +57,7 @@ Register-ArgumentCompleter -Native -CommandName @('broforce-tools', 'bt') -Scrip
                 _bt_complete_list (_bt_get_projects 'repos') $wordToComplete
             } elseif ($wordToComplete -like '-*') {
                 $flags = @('-t', '--type', '-n', '--name', '-a', '--author', '-o', '--output-repo',
-                           '-y', '--non-interactive', '--no-thunderstore', '--help')
+                           '-r', '--with-rocketlib', '-y', '--non-interactive', '--no-thunderstore', '--help')
                 _bt_complete_list $flags $wordToComplete 'ParameterName'
             }
         }
@@ -123,6 +123,11 @@ Register-ArgumentCompleter -Native -CommandName @('broforce-tools', 'bt') -Scrip
                         if ($tokenCount -le 4) {
                             $keys = @('repos_parent', 'release_dir', 'templates_dir', 'defaults.namespace', 'defaults.website_url')
                             _bt_complete_list $keys $wordToComplete
+                        }
+                    }
+                    'remove-repo' {
+                        if ($tokenCount -le 4) {
+                            _bt_complete_list (_bt_get_projects 'repos') $wordToComplete
                         }
                     }
                     'init' {
