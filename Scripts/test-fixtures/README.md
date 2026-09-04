@@ -46,6 +46,7 @@ nix build .
 # Set test environment
 export BROFORCE_CONFIG_DIR=$(pwd)/test-fixtures
 export BROFORCE_REPOS_PARENT=$(pwd)/test-fixtures/repos
+export BROFORCE_CACHE_DIR=$(mktemp -d)
 
 # Run tests
 ./result/bin/bt unreleased --all-repos
@@ -54,7 +55,7 @@ export BROFORCE_REPOS_PARENT=$(pwd)/test-fixtures/repos
 
 # Clean up
 rm result
-unset BROFORCE_CONFIG_DIR BROFORCE_REPOS_PARENT
+unset BROFORCE_CONFIG_DIR BROFORCE_REPOS_PARENT BROFORCE_CACHE_DIR
 ```
 
 ## Notes

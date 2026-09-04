@@ -1,12 +1,14 @@
 """Thunderstore API integration and packaging."""
 import filecmp
 import fnmatch
+import http.client
 import json
 import os
 import re
 import shutil
 import tempfile
 import time
+import urllib.request
 import xml.etree.ElementTree as ET
 import zipfile
 from typing import Optional
@@ -14,26 +16,13 @@ from typing import Optional
 import questionary
 import typer
 
+from . import __version__
 from .colors import Colors, CHECK, WARNING_ICON, ARROW
 from .config import get_cache_file, get_defaults, get_release_dir
 from .paths import ensure_dir, get_cache_dir, get_templates_dir
 from .project import Project, detect_project_type, find_mod_metadata_dir
 from .project_types import PROJECT_TYPES
 from .templates import copyanything
-
-try:
-    import urllib.request
-    import urllib.error
-    HAS_URLLIB = True
-except ImportError:
-    HAS_URLLIB = False
-
-FALLBACK_DEPENDENCY_VERSIONS = {
-    'UMM': '1.1.0',
-    'RocketLib': '2.4.2',
-    'BroMaker': '2.6.1',
-    'DresserMod': '1.2.1',
-}
 
 THUNDERSTORE_PACKAGES = {
     'UMM': ('UMM', 'UMM'),
@@ -44,53 +33,109 @@ THUNDERSTORE_PACKAGES = {
 
 CACHE_DURATION = 24 * 60 * 60
 
+FETCH_RETRY_INTERVAL = 10 * 60
+
+CACHE_SCHEMA = 2
+
+
+class DependencyVersionsUnavailable(Exception):
+    """Raised when versions cannot be fetched and no cached versions exist."""
+
+    def __init__(self, packages: list[str]):
+        self.packages = packages
+        super().__init__(
+            f"Could not reach Thunderstore and no cached versions exist for: "
+            f"{', '.join(packages)}. Run 'bt deps --refresh' once while online."
+        )
+
+
+def fail_dependency_versions(exc: DependencyVersionsUnavailable) -> None:
+    """Print a dependency-version failure and exit."""
+    print(f"{Colors.FAIL}Error: {exc}{Colors.ENDC}")
+    raise typer.Exit(1)
+
 
 def fetch_thunderstore_version(namespace: str, package_name: str) -> Optional[str]:
     """Fetch latest version from Thunderstore API."""
-    if not HAS_URLLIB:
-        return None
-
     url = f"https://thunderstore.io/api/experimental/package/{namespace}/{package_name}/"
 
     try:
-        req = urllib.request.Request(url, headers={'User-Agent': 'broforce-tools/1.0'})
+        req = urllib.request.Request(url, headers={'User-Agent': f'broforce-tools/{__version__}'})
         with urllib.request.urlopen(req, timeout=5) as response:
             data = json.loads(response.read().decode('utf-8'))
             return data.get('latest', {}).get('version_number', None)
-    except (urllib.error.URLError, urllib.error.HTTPError, json.JSONDecodeError, TimeoutError):
+    except (OSError, http.client.HTTPException, json.JSONDecodeError, ValueError):
         return None
 
 
-def get_dependency_versions() -> dict[str, str]:
-    """Get dependency versions, fetching from Thunderstore API with caching."""
+def _read_dependency_cache() -> Optional[dict]:
+    """Read the dependency cache file, or None if missing/unreadable."""
     cache_file = get_cache_file()
+    if not cache_file.exists():
+        return None
+    try:
+        with open(cache_file, 'r', encoding='utf-8') as f:
+            cache_data = json.load(f)
+    except (json.JSONDecodeError, OSError):
+        return None
+    if not isinstance(cache_data, dict):
+        return None
+    return cache_data
 
-    if cache_file.exists():
-        try:
-            with open(cache_file, 'r', encoding='utf-8') as f:
-                cache_data = json.load(f)
 
-            cache_time = cache_data.get('timestamp', 0)
-            if time.time() - cache_time < CACHE_DURATION:
-                versions = cache_data.get('versions', {})
-                if versions and set(versions.keys()) == set(THUNDERSTORE_PACKAGES.keys()):
-                    return versions
-        except (json.JSONDecodeError, OSError):
-            pass
+def get_dependency_versions(force_refresh: bool = False) -> dict[str, str]:
+    """Get dependency versions, fetching from Thunderstore API with caching.
+
+    Cached versions are always values that were fetched live at some point;
+    'fallbacks' lists the packages that were not fetched in the most recent run.
+    A cached result is reused without fetching when it covers every known package
+    and either is within CACHE_DURATION with no fallbacks, or carries fallbacks and
+    is within FETCH_RETRY_INTERVAL.
+
+    Raises DependencyVersionsUnavailable when a package can neither be fetched
+    nor served from a previously fetched value.
+    """
+    cache_file = get_cache_file()
+    cache_data = _read_dependency_cache() or {}
+
+    if cache_data.get('schema') != CACHE_SCHEMA:
+        cache_data = {}
+
+    cached_versions = cache_data.get('versions') or {}
+    cache_age = time.time() - cache_data.get('timestamp', 0)
+    cache_covers_all = set(cached_versions.keys()) == set(THUNDERSTORE_PACKAGES.keys())
+    has_fallbacks = bool(cache_data.get('fallbacks'))
+
+    cache_is_current = cache_age < CACHE_DURATION and cache_covers_all and not has_fallbacks
+    # Offline, every fetch burns its full timeout, so back off between retry rounds
+    within_retry_backoff = cache_covers_all and has_fallbacks and cache_age < FETCH_RETRY_INTERVAL
+
+    if (cache_is_current or within_retry_backoff) and not force_refresh:
+        return cached_versions
 
     versions = {}
     fallbacks = []
+    unavailable = []
     for dep_name, (namespace, package) in THUNDERSTORE_PACKAGES.items():
         version = fetch_thunderstore_version(namespace, package)
         if version:
             versions[dep_name] = version
+            continue
+
+        fallbacks.append(dep_name)
+        previous = cached_versions.get(dep_name)
+        if previous:
+            versions[dep_name] = previous
         else:
-            versions[dep_name] = FALLBACK_DEPENDENCY_VERSIONS[dep_name]
-            fallbacks.append(dep_name)
+            unavailable.append(dep_name)
+
+    if unavailable:
+        raise DependencyVersionsUnavailable(unavailable)
 
     try:
         ensure_dir(get_cache_dir())
         cache_data = {
+            'schema': CACHE_SCHEMA,
             'timestamp': time.time(),
             'versions': versions,
             'fallbacks': fallbacks,
@@ -130,59 +175,55 @@ def sanitize_package_name(name: str) -> str:
     return sanitized
 
 
-def detect_dependencies_from_csproj(project_path: str) -> list[str]:
-    """Detect RocketLib and BroMaker dependencies from .csproj file."""
-    dependencies_map = get_dependencies()
-    dependencies = [dependencies_map['UMM']]
+CSPROJ_SEARCH_DEPTH = 2
 
+CSPROJ_LIBRARY_DEPENDENCIES = [
+    ('RocketLib', 'RocketLib'),
+    ('BroMakerLib', 'BroMaker'),
+]
+
+
+def find_csproj_files(project_path: str, max_depth: int = CSPROJ_SEARCH_DEPTH) -> list[str]:
+    """Find .csproj files up to max_depth directory levels below project_path."""
     csproj_files = []
     for root, dirs, files in os.walk(project_path):
-        depth = root[len(project_path):].count(os.sep)
-        if depth > 2:
-            continue
+        relative = os.path.relpath(root, project_path)
+        depth = 0 if relative == os.curdir else relative.count(os.sep) + 1
+        if depth >= max_depth:
+            dirs[:] = []
+        else:
+            dirs[:] = [d for d in dirs if d not in ('bin', 'obj')]
         for file in files:
             if file.endswith('.csproj'):
                 csproj_files.append(os.path.join(root, file))
+    return sorted(csproj_files)
 
-    if not csproj_files:
-        return dependencies
 
-    csproj_path = csproj_files[0]
-
+def get_csproj_references(csproj_path: str) -> list[str]:
+    """Get all Reference Include values from a .csproj, namespaced or not."""
+    ns = {'msbuild': 'http://schemas.microsoft.com/developer/msbuild/2003'}
     try:
-        tree = ET.parse(csproj_path)
-        root = tree.getroot()
-
-        ns = {'msbuild': 'http://schemas.microsoft.com/developer/msbuild/2003'}
-
-        for ref in root.findall('.//msbuild:Reference', ns):
-            include = ref.get('Include', '')
-            if 'RocketLib' in include:
-                dependencies.append(dependencies_map['RocketLib'])
-                break
-
-        if dependencies_map['RocketLib'] not in dependencies:
-            for ref in root.findall('.//Reference'):
-                include = ref.get('Include', '')
-                if 'RocketLib' in include:
-                    dependencies.append(dependencies_map['RocketLib'])
-                    break
-
-        for ref in root.findall('.//msbuild:Reference', ns):
-            include = ref.get('Include', '')
-            if 'BroMakerLib' in include:
-                dependencies.append(dependencies_map['BroMaker'])
-                break
-
-        if dependencies_map['BroMaker'] not in dependencies:
-            for ref in root.findall('.//Reference'):
-                include = ref.get('Include', '')
-                if 'BroMakerLib' in include:
-                    dependencies.append(dependencies_map['BroMaker'])
-                    break
-
+        root = ET.parse(csproj_path).getroot()
     except Exception as e:
         print(f"{Colors.WARNING}Warning: Could not parse .csproj: {e}{Colors.ENDC}")
+        return []
+
+    refs = root.findall('.//msbuild:Reference', ns) + root.findall('.//Reference')
+    return [ref.get('Include', '') for ref in refs]
+
+
+def detect_dependencies_from_csproj(project_path: str) -> list[str]:
+    """Detect RocketLib and BroMaker dependencies from the project's .csproj files."""
+    dependencies_map = get_dependencies()
+    dependencies = [dependencies_map['UMM']]
+
+    includes = []
+    for csproj_path in find_csproj_files(project_path):
+        includes.extend(get_csproj_references(csproj_path))
+
+    for library, dep_key in CSPROJ_LIBRARY_DEPENDENCIES:
+        if any(library in include for include in includes):
+            dependencies.append(dependencies_map[dep_key])
 
     return dependencies
 
@@ -338,30 +379,45 @@ def get_version_from_info_json(modcontent_path: str, project_type: str) -> Optio
         return None
 
 
+def parse_version(version: Optional[str]) -> Optional[tuple[int, ...]]:
+    """Parse a dotted numeric version into a tuple, or None if unparsable."""
+    if not version:
+        return None
+    try:
+        return tuple(int(x) for x in version.split('.'))
+    except (ValueError, AttributeError):
+        return None
+
+
 def compare_versions(v1: Optional[str], v2: Optional[str]) -> int:
-    """Compare semantic versions. Returns 1 if v1 > v2, -1 if v1 < v2, 0 if equal."""
+    """Compare semantic versions. Returns 1 if v1 > v2, -1 if v1 < v2, 0 if equal.
+
+    An unparsable version sorts below any parsable one.
+    """
     if not v1:
         return -1
     if not v2:
         return 1
 
-    try:
-        parts1 = [int(x) for x in v1.split('.')]
-        parts2 = [int(x) for x in v2.split('.')]
+    parts1 = parse_version(v1)
+    parts2 = parse_version(v2)
 
-        while len(parts1) < len(parts2):
-            parts1.append(0)
-        while len(parts2) < len(parts1):
-            parts2.append(0)
+    if parts1 is None and parts2 is None:
+        return 0
+    if parts1 is None:
+        return -1
+    if parts2 is None:
+        return 1
 
-        for p1, p2 in zip(parts1, parts2):
-            if p1 > p2:
-                return 1
-            elif p1 < p2:
-                return -1
-        return 0
-    except (ValueError, AttributeError):
-        return 0
+    length = max(len(parts1), len(parts2))
+    parts1 += (0,) * (length - len(parts1))
+    parts2 += (0,) * (length - len(parts2))
+
+    if parts1 > parts2:
+        return 1
+    if parts1 < parts2:
+        return -1
+    return 0
 
 
 def sync_version_file(modcontent_path: str, project_type: str, target_version: str) -> tuple[bool, Optional[str]]:
@@ -546,8 +602,11 @@ def do_init_thunderstore(
         with open(changelog_path, 'w', encoding='utf-8') as f:
             f.write('## v1.0.0 (unreleased)\n- Initial release\n')
 
-    detected_deps = detect_dependencies_from_csproj(project_path)
-    dependencies = get_dependencies()
+    try:
+        detected_deps = detect_dependencies_from_csproj(project_path)
+        dependencies = get_dependencies()
+    except DependencyVersionsUnavailable as e:
+        fail_dependency_versions(e)
 
     type_info = PROJECT_TYPES.get(project_type, {})
     for dep_key in type_info.get("extra_dependencies", []):
@@ -716,7 +775,6 @@ def do_package(
     else:
         changelog_version = get_version_from_changelog(changelog_path)
         manifest_version = None
-        info_version = None
 
         try:
             with open(manifest_path, 'r', encoding='utf-8') as f:
@@ -733,7 +791,14 @@ def do_package(
             (type_info.get("version_file_label") or "metadata"): info_version
         }
 
-        valid_versions = {k: v for k, v in versions.items() if v is not None}
+        valid_versions = {}
+        for source, ver in versions.items():
+            if ver is None:
+                continue
+            if parse_version(ver) is None:
+                print(f"{Colors.WARNING}Warning: {source} version '{ver}' is not a numeric version and will be ignored{Colors.ENDC}")
+                continue
+            valid_versions[source] = ver
 
         if not valid_versions:
             print(f"{Colors.FAIL}Error: Could not find version in any file{Colors.ENDC}")
@@ -807,7 +872,10 @@ def do_package(
         else:
             print(f"{Colors.WARNING}Continuing with 'Unknown' as author (package will be named Unknown-{package_name}-{version}.zip){Colors.ENDC}")
 
-    dependencies = get_dependencies()
+    try:
+        dependencies = get_dependencies()
+    except DependencyVersionsUnavailable as e:
+        fail_dependency_versions(e)
     current_deps = manifest_data.get('dependencies', [])
     outdated_deps = []
     updated_deps = []
@@ -854,7 +922,10 @@ def do_package(
     else:
         updated_deps = current_deps
 
-    detected_deps = detect_dependencies_from_csproj(project_path)
+    try:
+        detected_deps = detect_dependencies_from_csproj(project_path)
+    except DependencyVersionsUnavailable as e:
+        fail_dependency_versions(e)
     current_dep_set = set(updated_deps if updated_deps else current_deps)
     missing_deps = []
 
@@ -919,30 +990,15 @@ def do_package(
 
             current_bromaker_version = mod_json_data.get('BroMakerVersion', None)
             if current_bromaker_version:
-                dep_versions = get_dependency_versions()
+                try:
+                    dep_versions = get_dependency_versions()
+                except DependencyVersionsUnavailable as e:
+                    fail_dependency_versions(e)
                 latest_bromaker_version = dep_versions.get('BroMaker', current_bromaker_version)
 
                 if current_bromaker_version != latest_bromaker_version:
-                    print(f"\n{Colors.WARNING}Outdated BroMakerVersion in {os.path.basename(version_file_path)}:{Colors.ENDC}")
-                    print(f"  {current_bromaker_version} {ARROW} {latest_bromaker_version}")
-
-                    if non_interactive:
-                        should_update_bromaker = True
-                    else:
-                        update_bromaker = questionary.confirm(
-                            "Update BroMakerVersion to latest?",
-                            default=True
-                        ).ask()
-
-                        if update_bromaker is None:
-                            raise typer.Exit()
-                        should_update_bromaker = update_bromaker
-
-                    if should_update_bromaker:
-                        mod_json_data['BroMakerVersion'] = latest_bromaker_version
-                        with open(version_file_path, 'w', encoding='utf-8') as f:
-                            json.dump(mod_json_data, f, indent=2)
-                        print(f"{Colors.GREEN}Updated BroMakerVersion to {latest_bromaker_version}{Colors.ENDC}")
+                    print(f"\n{Colors.WARNING}{WARNING_ICON}Warning: {os.path.basename(version_file_path)} declares BroMakerVersion {current_bromaker_version}, latest is {latest_bromaker_version}{Colors.ENDC}")
+                    print(f"{Colors.CYAN}Edit {os.path.basename(version_file_path)} yourself if your bro requires the newer BroMaker.{Colors.ENDC}")
         except (json.JSONDecodeError, OSError):
             pass
 
@@ -1004,11 +1060,6 @@ def do_package(
             flags=re.IGNORECASE
         )
 
-        if not keep_unreleased and changelog_cleaned != changelog_content:
-            with open(changelog_path, 'w', encoding='utf-8') as f:
-                f.write(changelog_cleaned)
-            print(f"{Colors.GREEN}Removed (unreleased) tag from {changelog_name}{Colors.ENDC}")
-
         with open(os.path.join(temp_dir, 'CHANGELOG.md'), 'w', encoding='utf-8') as f:
             f.write(changelog_cleaned)
 
@@ -1025,6 +1076,11 @@ def do_package(
                     file_path = os.path.join(root, file)
                     arcname = os.path.relpath(file_path, temp_dir)
                     zipf.write(file_path, arcname)
+
+        if not keep_unreleased and changelog_cleaned != changelog_content:
+            with open(changelog_path, 'w', encoding='utf-8') as f:
+                f.write(changelog_cleaned)
+            print(f"{Colors.GREEN}Removed (unreleased) tag from {changelog_name}{Colors.ENDC}")
 
     zip_size = os.path.getsize(zip_path) / 1024
 

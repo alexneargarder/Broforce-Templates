@@ -5,23 +5,24 @@
     OPTIONAL: Share build settings across all Broforce repos
 
     Place this file in the parent directory of all your Broforce repos.
-    Each repo's LocalBroforcePath.props will automatically import it if it exists.
 
     Setup:
     1. Copy this file to BroforceGlobal.props (same directory)
     2. Update settings below
     3. Add BroforceGlobal.props to parent directory's .gitignore (if tracked)
 
-    Individual repos can override these settings in their LocalBroforcePath.props.
+    Import chain: each repo's BroforceModBuild.targets imports this file from the repos
+    parent directory first, then that repo's LocalBroforcePath.props. Settings in a repo's
+    LocalBroforcePath.props override the ones here.
   -->
 
   <PropertyGroup>
 
     <!-- Broforce installation directory -->
-    <BroforcePath>C:\Program Files (x86)\Steam\steamapps\common\Broforce</BroforcePath>
+    <BroforcePath>C:/Program Files (x86)/Steam/steamapps/common/Broforce</BroforcePath>
 
     <!-- For Thunderstore/r2modman: -->
-    <!-- <BroforcePath>C:\Users\YourName\AppData\Roaming\r2modmanPlus-local\Broforce\profiles\Default\UMM</BroforcePath> -->
+    <!-- <BroforcePath>C:/Users/YourName/AppData/Roaming/r2modmanPlus-local/Broforce/profiles/Default/UMM</BroforcePath> -->
 
     <!-- Close game before build to prevent file locking (default: true) -->
     <CloseBroforceOnBuild>true</CloseBroforceOnBuild>
@@ -39,8 +40,8 @@
     <LibPath>$(MSBuildThisFileDirectory)YourRepo/libs</LibPath>
 
     <!-- Point these to your installed mods (Thunderstore structure) -->
-    <BroMakerLibPath>$(BroforcePath)\Mods\BroMaker-BroMaker\BroMakerLib\BroMakerLib.dll</BroMakerLibPath>
-    <RocketLibPath>$(BroforcePath)\Mods\RocketLib-RocketLib\RocketLib\RocketLib.dll</RocketLibPath>
+    <BroMakerLibPath>$(BroforcePath)/Mods/BroMaker-BroMaker/BroMakerLib/BroMakerLib.dll</BroMakerLibPath>
+    <RocketLibPath>$(BroforcePath)/Mods/RocketLib-RocketLib/RocketLib/RocketLib.dll</RocketLibPath>
     <!-- If building from source repos: -->
     <!-- <BroMakerLibPath>$(MSBuildThisFileDirectory)Bro-Maker/BroMakerLib/_ModContent/BroMakerLib.dll</BroMakerLibPath> -->
     <!-- <RocketLibPath>$(MSBuildThisFileDirectory)RocketLib/RocketLib/_ModContent/RocketLib.dll</RocketLibPath> -->

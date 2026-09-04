@@ -4,7 +4,7 @@
 function _bt_get_projects {
     param([string]$Mode)
     try {
-        $output = python3 -m broforce_tools.completion_helper $Mode 2>$null
+        $output = bt __complete $Mode 2>$null
         if ($output) {
             return ($output -split "`n" | Where-Object { $_ -ne '' })
         }
@@ -27,15 +27,14 @@ function _bt_complete_list {
 Register-ArgumentCompleter -Native -CommandName @('broforce-tools', 'bt') -ScriptBlock {
     param($wordToComplete, $commandAst, $cursorPosition)
 
-    $tokens = $commandAst.ToString().Substring(0, $cursorPosition) -split '\s+'
-    $tokenCount = $tokens.Count
+    $tokens = @($commandAst.CommandElements | ForEach-Object { $_.Extent.Text })
 
-    # If cursor is right after a space, we're completing a new (empty) token
-    $astString = $commandAst.ToString().Substring(0, $cursorPosition)
-    if ($astString.EndsWith(' ')) {
+    # Cursor past the last element means a new, empty word is being completed
+    if ($cursorPosition -gt $commandAst.Extent.EndOffset) {
         $wordToComplete = ''
-        $tokenCount++
+        $tokens += ''
     }
+    $tokenCount = $tokens.Count
 
     $commands = @('create', 'init-thunderstore', 'package', 'unreleased', 'changelog', 'config', 'deps')
     $globalFlags = @('--help', '-h', '--clear-cache', '--version')
@@ -57,14 +56,14 @@ Register-ArgumentCompleter -Native -CommandName @('broforce-tools', 'bt') -Scrip
                 _bt_complete_list (_bt_get_projects 'repos') $wordToComplete
             } elseif ($wordToComplete -like '-*') {
                 $flags = @('-t', '--type', '-n', '--name', '-a', '--author', '-o', '--output-repo',
-                           '-r', '--with-rocketlib', '-y', '--non-interactive', '--no-thunderstore', '--help')
+                           '-r', '--with-rocketlib', '-y', '--non-interactive', '--no-thunderstore', '--help', '-h')
                 _bt_complete_list $flags $wordToComplete 'ParameterName'
             }
         }
         'init-thunderstore' {
             if ($wordToComplete -like '-*') {
                 $flags = @('-y', '--non-interactive', '-n', '--namespace', '-d', '--description',
-                           '-w', '--website-url', '-p', '--package-name', '--all-repos', '--help')
+                           '-w', '--website-url', '-p', '--package-name', '--all-repos', '--help', '-h')
                 _bt_complete_list $flags $wordToComplete 'ParameterName'
             } else {
                 _bt_complete_list (_bt_get_projects 'init') $wordToComplete
@@ -77,7 +76,7 @@ Register-ArgumentCompleter -Native -CommandName @('broforce-tools', 'bt') -Scrip
                 $flags = @('-y', '--non-interactive', '--version', '--all-repos',
                            '--allow-outdated-changelog', '--overwrite', '--update-deps',
                            '--no-update-deps', '--add-missing-deps', '--no-add-missing-deps',
-                           '--keep-unreleased', '--help')
+                           '--keep-unreleased', '--help', '-h')
                 _bt_complete_list $flags $wordToComplete 'ParameterName'
             } else {
                 _bt_complete_list (_bt_get_projects 'package') $wordToComplete
@@ -87,25 +86,25 @@ Register-ArgumentCompleter -Native -CommandName @('broforce-tools', 'bt') -Scrip
             if ($prev -eq '--package') {
                 _bt_complete_list (_bt_get_projects 'package') $wordToComplete
             } elseif ($wordToComplete -like '-*') {
-                $flags = @('-y', '--non-interactive', '--all-repos', '--package-all', '--package', '--help')
+                $flags = @('-y', '--non-interactive', '--all-repos', '--package-all', '--package', '--help', '-h')
                 _bt_complete_list $flags $wordToComplete 'ParameterName'
             }
         }
         'deps' {
             if ($wordToComplete -like '-*') {
-                $flags = @('-r', '--refresh', '--help')
+                $flags = @('-r', '--refresh', '--help', '-h')
                 _bt_complete_list $flags $wordToComplete 'ParameterName'
             }
         }
         'changelog' {
             # Position 2: complete changelog subcommands
             if ($tokenCount -le 3) {
-                _bt_complete_list @('add', 'show', 'edit', '--help') $wordToComplete 'ParameterName'
+                _bt_complete_list @('add', 'show', 'edit', '--help', '-h') $wordToComplete 'ParameterName'
             } else {
                 $changelogSub = $tokens[2]
                 if ($changelogSub -in @('add', 'show', 'edit')) {
                     if ($wordToComplete -like '-*') {
-                        $flags = @('-y', '--non-interactive', '--all-repos', '--help')
+                        $flags = @('-y', '--non-interactive', '--all-repos', '--help', '-h')
                         _bt_complete_list $flags $wordToComplete 'ParameterName'
                     } else {
                         _bt_complete_list (_bt_get_projects 'package') $wordToComplete
@@ -115,7 +114,7 @@ Register-ArgumentCompleter -Native -CommandName @('broforce-tools', 'bt') -Scrip
         }
         'config' {
             if ($tokenCount -le 3) {
-                _bt_complete_list @('show', 'path', 'edit', 'set', 'add-repo', 'remove-repo', 'init', '--help') $wordToComplete 'ParameterName'
+                _bt_complete_list @('show', 'path', 'edit', 'set', 'add-repo', 'remove-repo', 'init', '--help', '-h') $wordToComplete 'ParameterName'
             } else {
                 $configSub = $tokens[2]
                 switch ($configSub) {
@@ -132,7 +131,7 @@ Register-ArgumentCompleter -Native -CommandName @('broforce-tools', 'bt') -Scrip
                     }
                     'init' {
                         if ($wordToComplete -like '-*') {
-                            _bt_complete_list @('-y', '--non-interactive', '--help') $wordToComplete 'ParameterName'
+                            _bt_complete_list @('-y', '--non-interactive', '--help', '-h') $wordToComplete 'ParameterName'
                         }
                     }
                 }

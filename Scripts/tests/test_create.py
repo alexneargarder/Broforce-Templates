@@ -79,6 +79,20 @@ class TestCreateMod:
         targets = create_env["repo"] / "Scripts" / "BroforceModBuild.targets"
         assert targets.exists()
 
+    def test_differing_build_targets_left_untouched(self, create_env):
+        scripts_dir = create_env["repo"] / "Scripts"
+        scripts_dir.mkdir()
+        targets = scripts_dir / "BroforceModBuild.targets"
+        targets.write_text("<Project></Project>")
+        result = runner.invoke(app, [
+            "create", "-t", "mod", "-n", "TestMod", "-a", "TestAuthor",
+            "-o", "TestRepo", "-y", "--no-thunderstore",
+        ])
+        assert result.exit_code == 0
+        assert targets.read_text() == "<Project></Project>"
+        assert "differs" in result.output
+        assert "sync-targets.sh" in result.output
+
     def test_duplicate_name_fails(self, create_env):
         runner.invoke(app, [
             "create", "-t", "mod", "-n", "TestMod", "-a", "TestAuthor",

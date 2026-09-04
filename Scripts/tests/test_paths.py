@@ -103,13 +103,33 @@ class TestGetConfigDir:
 
 
 class TestGetCacheDir:
+    def test_env_override(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("BROFORCE_CACHE_DIR", str(tmp_path))
+        assert get_cache_dir() == tmp_path
+
     def test_linux_xdg(self, tmp_path, monkeypatch):
+        monkeypatch.delenv("BROFORCE_CACHE_DIR", raising=False)
         monkeypatch.setattr("broforce_tools.paths.is_windows", lambda: False)
         monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path))
         assert get_cache_dir() == tmp_path / "broforce-tools"
 
     def test_linux_default(self, monkeypatch):
+        monkeypatch.delenv("BROFORCE_CACHE_DIR", raising=False)
         monkeypatch.delenv("XDG_CACHE_HOME", raising=False)
         monkeypatch.setattr("broforce_tools.paths.is_windows", lambda: False)
         result = get_cache_dir()
         assert str(result).endswith(".cache/broforce-tools")
+
+    def test_windows_localappdata(self, tmp_path, monkeypatch):
+        monkeypatch.delenv("BROFORCE_CACHE_DIR", raising=False)
+        monkeypatch.setattr("broforce_tools.paths.is_windows", lambda: True)
+        monkeypatch.setenv("LOCALAPPDATA", str(tmp_path))
+        assert get_cache_dir() == tmp_path / "broforce-tools" / "cache"
+
+    def test_windows_localappdata_fallback(self, monkeypatch):
+        monkeypatch.delenv("BROFORCE_CACHE_DIR", raising=False)
+        monkeypatch.delenv("LOCALAPPDATA", raising=False)
+        monkeypatch.setattr("broforce_tools.paths.is_windows", lambda: True)
+        result = get_cache_dir()
+        assert str(result).endswith("AppData/Local/broforce-tools/cache") or \
+               str(result).endswith("AppData\\Local\\broforce-tools\\cache")

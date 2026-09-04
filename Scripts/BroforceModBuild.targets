@@ -1,13 +1,21 @@
 <?xml version="1.0" encoding="utf-8"?>
 <Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
 
+  <!-- Locate the props files by walking up from this file, so builds work from a git worktree
+       (<repo>/.worktrees/<name>/Scripts/) as well as a normal checkout (<repo>/Scripts/) -->
+  <PropertyGroup>
+    <BroforceGlobalProps>$([MSBuild]::GetPathOfFileAbove('BroforceGlobal.props', '$(MSBuildThisFileDirectory)'))</BroforceGlobalProps>
+    <LocalBroforceProps>$([MSBuild]::GetPathOfFileAbove('LocalBroforcePath.props', '$(MSBuildThisFileDirectory)'))</LocalBroforceProps>
+    <BroforceReposRoot Condition="'$(BroforceGlobalProps)' != ''">$([System.IO.Path]::GetDirectoryName('$(BroforceGlobalProps)'))</BroforceReposRoot>
+    <BroforceReposRoot Condition="'$(BroforceReposRoot)' == '' AND '$(LocalBroforceProps)' != ''">$([System.IO.Path]::GetDirectoryName('$(LocalBroforceProps)'))/..</BroforceReposRoot>
+    <BroforceReposRoot Condition="'$(BroforceReposRoot)' == ''">$(MSBuildThisFileDirectory)../..</BroforceReposRoot>
+  </PropertyGroup>
+
   <!-- Import global props first if it exists -->
-  <Import Project="$(MSBuildThisFileDirectory)../../BroforceGlobal.props"
-          Condition="Exists('$(MSBuildThisFileDirectory)../../BroforceGlobal.props')" />
+  <Import Project="$(BroforceGlobalProps)" Condition="'$(BroforceGlobalProps)' != ''" />
 
   <!-- Import local props second (overrides global) -->
-  <Import Project="$(MSBuildThisFileDirectory)../LocalBroforcePath.props"
-          Condition="Exists('$(MSBuildThisFileDirectory)../LocalBroforcePath.props')" />
+  <Import Project="$(LocalBroforceProps)" Condition="'$(LocalBroforceProps)' != ''" />
 
   <PropertyGroup>
     <!-- Windows default -->
@@ -32,17 +40,53 @@
     <CopyXmlDocToModContent Condition="'$(CopyXmlDocToModContent)' == ''">false</CopyXmlDocToModContent>
     <SkipInstall Condition="'$(SkipInstall)' == ''">false</SkipInstall>
     <LaunchArgs Condition="'$(LaunchArgs)' == ''"></LaunchArgs>
-    <LibPath Condition="'$(LibPath)' == ''">$(MSBuildThisFileDirectory)../../BroforceMods/libs</LibPath>
+    <_LibPathUserSet Condition="'$(LibPath)' != ''">true</_LibPathUserSet>
+    <LibPath Condition="'$(LibPath)' == ''">$(BroforceReposRoot)/BroforceMods/libs</LibPath>
+    <_BroMakerLibPathUserSet Condition="'$(BroMakerLibPath)' != ''">true</_BroMakerLibPathUserSet>
     <BroMakerLibPath Condition="'$(BroMakerLibPath)' == '' AND Exists('$(BroforcePath)/Mods/BroMaker/BroMakerLib.dll')">$(BroforcePath)/Mods/BroMaker/BroMakerLib.dll</BroMakerLibPath>
     <BroMakerLibPath Condition="'$(BroMakerLibPath)' == '' AND Exists('$(BroforcePath)/Mods/BroMaker-BroMaker/BroMakerLib/BroMakerLib.dll')">$(BroforcePath)/Mods/BroMaker-BroMaker/BroMakerLib/BroMakerLib.dll</BroMakerLibPath>
     <BroMakerLibPath Condition="'$(BroMakerLibPath)' == ''">$(BroforcePath)/Mods/BroMaker/BroMakerLib.dll</BroMakerLibPath>
 
+    <_RocketLibPathUserSet Condition="'$(RocketLibPath)' != ''">true</_RocketLibPathUserSet>
     <RocketLibPath Condition="'$(RocketLibPath)' == '' AND Exists('$(BroforcePath)/Mods/RocketLib/RocketLib.dll')">$(BroforcePath)/Mods/RocketLib/RocketLib.dll</RocketLibPath>
     <RocketLibPath Condition="'$(RocketLibPath)' == '' AND Exists('$(BroforcePath)/Mods/RocketLib-RocketLib/RocketLib/RocketLib.dll')">$(BroforcePath)/Mods/RocketLib-RocketLib/RocketLib/RocketLib.dll</RocketLibPath>
     <RocketLibPath Condition="'$(RocketLibPath)' == ''">$(BroforcePath)/Mods/RocketLib/RocketLib.dll</RocketLibPath>
     <IsWindows Condition="'$(OS)' == 'Windows_NT'">true</IsWindows>
     <IsLinux Condition="'$(OS)' != 'Windows_NT'">true</IsLinux>
   </PropertyGroup>
+
+  <Target Name="WarnMissingLibPaths" BeforeTargets="ResolveAssemblyReferences"
+          Condition="'$(DesignTimeBuild)' != 'true'">
+    <ItemGroup>
+      <_BroMakerLibReference Include="@(Reference)"
+                             Condition="$([System.String]::new('%(Reference.Identity)').StartsWith('BroMakerLib'))" />
+      <_RocketLibReference Include="@(Reference)"
+                           Condition="$([System.String]::new('%(Reference.Identity)').StartsWith('RocketLib'))" />
+    </ItemGroup>
+
+    <Warning Code="BRO0001"
+             Condition="'@(_BroMakerLibReference)' != '' AND !Exists('$(BroMakerLibPath)') AND '$(_BroMakerLibPathUserSet)' == 'true'"
+             Text="BroMakerLibPath is set to $(BroMakerLibPath) but that file does not exist. Check the value in BroforceGlobal.props or LocalBroforcePath.props." />
+
+    <Warning Code="BRO0001"
+             Condition="'@(_BroMakerLibReference)' != '' AND !Exists('$(BroMakerLibPath)') AND '$(_BroMakerLibPathUserSet)' != 'true'"
+             Text="BroMakerLibPath does not exist: $(BroMakerLibPath). Neither $(BroforcePath)/Mods/BroMaker/BroMakerLib.dll nor $(BroforcePath)/Mods/BroMaker-BroMaker/BroMakerLib/BroMakerLib.dll was found. Install BroMaker into that Broforce profile, or set BroMakerLibPath in BroforceGlobal.props or LocalBroforcePath.props." />
+
+    <Warning Code="BRO0002"
+             Condition="'@(_RocketLibReference)' != '' AND !Exists('$(RocketLibPath)') AND '$(_RocketLibPathUserSet)' == 'true'"
+             Text="RocketLibPath is set to $(RocketLibPath) but that file does not exist. Check the value in BroforceGlobal.props or LocalBroforcePath.props." />
+
+    <Warning Code="BRO0002"
+             Condition="'@(_RocketLibReference)' != '' AND !Exists('$(RocketLibPath)') AND '$(_RocketLibPathUserSet)' != 'true'"
+             Text="RocketLibPath does not exist: $(RocketLibPath). Neither $(BroforcePath)/Mods/RocketLib/RocketLib.dll nor $(BroforcePath)/Mods/RocketLib-RocketLib/RocketLib/RocketLib.dll was found. Install RocketLib into that Broforce profile, or set RocketLibPath in BroforceGlobal.props or LocalBroforcePath.props." />
+
+    <Warning Code="BRO0003"
+             Condition="!Exists('$(LibPath)') AND '$(_LibPathUserSet)' == 'true'"
+             Text="LibPath is set to $(LibPath) but that directory does not exist. Check the value in BroforceGlobal.props or LocalBroforcePath.props." />
+    <Warning Code="BRO0003"
+             Condition="!Exists('$(LibPath)') AND '$(_LibPathUserSet)' != 'true'"
+             Text="LibPath does not exist: $(LibPath). Reference DLLs are expected at &lt;repos root&gt;/BroforceMods/libs. Set LibPath in BroforceGlobal.props or LocalBroforcePath.props." />
+  </Target>
 
   <Target Name="KillGameProcess" BeforeTargets="Build"
           Condition="'$(CloseBroforceOnBuild)' == 'true' AND '$(IsWindows)' == 'true'">
@@ -54,13 +98,14 @@
 
   <Target Name="KillGameProcessLinux" BeforeTargets="Build"
           Condition="'$(CloseBroforceOnBuild)' == 'true' AND '$(IsLinux)' == 'true'">
-    <Exec Command="pkill -9 -x 'Broforce.x86_64' 2>/dev/null || pkill -9 -x Broforce 2>/dev/null || pkill -9 -f 'Broforce_beta.exe' 2>/dev/null || true"
+    <!-- Bracketed patterns stop pgrep/pkill -f from matching this command's own shell; %24 is MSBuild's escape for a literal $ -->
+    <Exec Command="alive() { pgrep -x 'Broforce.x86_64' || pgrep -x Broforce || pgrep -f '[B]roforce_beta.exe'; } &gt;/dev/null 2&gt;&amp;1; bfkill() { pkill $1 -x 'Broforce.x86_64'; pkill $1 -x Broforce; pkill $1 -f '[B]roforce_beta.exe'; } &gt;/dev/null 2&gt;&amp;1; bfkill -TERM; deadline=%24((`date +%s`+5)); while alive; do [ `date +%s` -ge $deadline ] &amp;&amp; break; sleep 1; done; if alive; then bfkill -KILL; fi || true"
           IgnoreExitCode="true"
           ContinueOnError="true" />
     <Message Text="Closed Broforce" Importance="high" Condition="'$(VerboseBuildOutput)' == 'true'" />
   </Target>
 
-  <Target Name="DetectProjectType" BeforeTargets="InstallToGame">
+  <Target Name="DetectProjectType">
     <ItemGroup>
       <ModJsonFiles Include="$(ProjectDir)$(ModContentFolder)\*.mod.json" />
     </ItemGroup>
@@ -137,20 +182,27 @@
 
   <Target Name="LaunchGame" AfterTargets="InstallToGame"
           Condition="'$(LaunchBroforceOnBuild)' == 'true' AND '$(IsWindows)' == 'true'">
-    <Exec Command="start steam://rungameid/274190"
+    <Exec Command="start &quot;&quot; &quot;steam://rungameid/274190&quot;"
           Condition="'$(LaunchArgs)' == ''" />
-    <Exec Command="start steam://run/274190//$(LaunchArgs)/"
+    <Exec Command="start &quot;&quot; &quot;steam://run/274190//$(LaunchArgs)/&quot;"
           Condition="'$(LaunchArgs)' != ''" />
     <Message Text="Launching Broforce via Steam" Importance="high" Condition="'$(VerboseBuildOutput)' == 'true'" />
   </Target>
 
   <Target Name="LaunchGameLinux" AfterTargets="InstallToGame"
           Condition="'$(LaunchBroforceOnBuild)' == 'true' AND '$(IsLinux)' == 'true'">
-    <Exec Command="command -v bf &amp;&gt;/dev/null &amp;&amp; bf || xdg-open steam://rungameid/274190"
+    <Exec Command="if command -v bf &gt;/dev/null 2&gt;&amp;1; then bf; else xdg-open steam://rungameid/274190; fi"
           Condition="'$(LaunchArgs)' == ''" />
-    <Exec Command="command -v bf &amp;&gt;/dev/null &amp;&amp; bf $(LaunchArgs) || xdg-open 'steam://run/274190//$(LaunchArgs)/'"
+    <Exec Command="if command -v bf &gt;/dev/null 2&gt;&amp;1; then bf $(LaunchArgs); else xdg-open 'steam://run/274190//$(LaunchArgs)/'; fi"
           Condition="'$(LaunchArgs)' != ''" />
     <Message Text="Launching Broforce" Importance="high" Condition="'$(VerboseBuildOutput)' == 'true'" />
+  </Target>
+
+  <!-- Launch the game without building or installing: msbuild <csproj> /t:LaunchOnly /p:LaunchBroforceOnBuild=true -->
+  <Target Name="LaunchOnly" DependsOnTargets="LaunchGame;LaunchGameLinux">
+    <Warning Code="BRO0004"
+             Condition="'$(LaunchBroforceOnBuild)' != 'true'"
+             Text="LaunchOnly does nothing unless LaunchBroforceOnBuild=true is passed" />
   </Target>
 
 </Project>

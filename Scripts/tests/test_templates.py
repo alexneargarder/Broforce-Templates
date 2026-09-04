@@ -98,6 +98,28 @@ class TestCopyanything:
         assert not (dst / "file.user").exists()
         assert not (dst / ".vs").exists()
 
+    def test_ignores_build_and_ide_dirs(self, tmp_path):
+        src = tmp_path / "src"
+        src.mkdir()
+        (src / "Project.csproj").write_text("keep")
+        for name in ("bin", "obj", ".idea"):
+            d = src / name
+            d.mkdir()
+            (d / "artifact.txt").write_text("ignore")
+        nested = src / "Sub"
+        nested.mkdir()
+        (nested / "code.cs").write_text("keep")
+        (nested / "obj").mkdir()
+        (nested / "obj" / "artifact.txt").write_text("ignore")
+        dst = tmp_path / "dst"
+        copyanything(str(src), str(dst))
+        assert (dst / "Project.csproj").exists()
+        assert (dst / "Sub" / "code.cs").exists()
+        assert not (dst / "bin").exists()
+        assert not (dst / "obj").exists()
+        assert not (dst / ".idea").exists()
+        assert not (dst / "Sub" / "obj").exists()
+
     def test_makes_writable(self, tmp_path):
         src = tmp_path / "src"
         src.mkdir()

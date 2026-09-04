@@ -1,11 +1,10 @@
 """Cross-platform path handling for broforce-tools.
 
 On Linux: Uses XDG directories (~/.config/broforce-tools/, ~/.cache/broforce-tools/)
-On Windows: Uses %APPDATA%/broforce-tools for config, temp for cache
+On Windows: Uses %APPDATA%/broforce-tools for config, %LOCALAPPDATA%/broforce-tools/cache for cache
 """
 import os
 import sys
-import tempfile
 from pathlib import Path
 from typing import Optional
 
@@ -49,11 +48,19 @@ def get_config_dir() -> Path:
 def get_cache_dir() -> Path:
     """Get cache directory.
 
+    Checks BROFORCE_CACHE_DIR env var first (for testing).
     Linux: XDG_CACHE_HOME/broforce-tools or ~/.cache/broforce-tools
-    Windows: System temp directory / broforce-tools
+    Windows: %LOCALAPPDATA%/broforce-tools/cache
     """
+    env_path = os.environ.get('BROFORCE_CACHE_DIR')
+    if env_path:
+        return Path(env_path).expanduser()
+
     if is_windows():
-        return Path(tempfile.gettempdir()) / 'broforce-tools'
+        localappdata = os.environ.get('LOCALAPPDATA')
+        if localappdata:
+            return Path(localappdata) / 'broforce-tools' / 'cache'
+        return Path.home() / 'AppData' / 'Local' / 'broforce-tools' / 'cache'
     else:
         xdg_cache = os.environ.get('XDG_CACHE_HOME')
         if xdg_cache:

@@ -3,7 +3,7 @@
 
 _get_projects() {
     local mode="$1"
-    python3 -m broforce_tools.completion_helper "$mode" 2>/dev/null
+    bt __complete "$mode" 2>/dev/null
 }
 
 _broforce_tools_completions()
@@ -16,7 +16,7 @@ _broforce_tools_completions()
 
     # Complete subcommands
     if [ $COMP_CWORD -eq 1 ]; then
-        COMPREPLY=($(compgen -W "$commands --help --clear-cache --version" -- "$cur"))
+        COMPREPLY=($(compgen -W "$commands --help -h --clear-cache --version" -- "$cur"))
         return 0
     fi
 
@@ -30,12 +30,12 @@ _broforce_tools_completions()
                 local IFS=$'\n'
                 COMPREPLY=($(compgen -W "$(_get_projects repos)" -- "$cur"))
             elif [[ "$cur" == -* ]]; then
-                COMPREPLY=($(compgen -W "-t --type -n --name -a --author -o --output-repo -r --with-rocketlib -y --non-interactive --no-thunderstore --help" -- "$cur"))
+                COMPREPLY=($(compgen -W "-t --type -n --name -a --author -o --output-repo -r --with-rocketlib -y --non-interactive --no-thunderstore --help -h" -- "$cur"))
             fi
             ;;
         init-thunderstore)
             if [[ "$cur" == -* ]]; then
-                COMPREPLY=($(compgen -W "-y --non-interactive -n --namespace -d --description -w --website-url -p --package-name --all-repos --help" -- "$cur"))
+                COMPREPLY=($(compgen -W "-y --non-interactive -n --namespace -d --description -w --website-url -p --package-name --all-repos --help -h" -- "$cur"))
             else
                 compopt -o filenames 2>/dev/null
                 local IFS=$'\n'
@@ -46,7 +46,7 @@ _broforce_tools_completions()
             if [[ "$prev" == "--version" ]] || [[ "$prev" == "--package" ]]; then
                 return 0
             elif [[ "$cur" == -* ]]; then
-                COMPREPLY=($(compgen -W "-y --non-interactive --version --all-repos --allow-outdated-changelog --overwrite --keep-unreleased --update-deps --no-update-deps --add-missing-deps --no-add-missing-deps --help" -- "$cur"))
+                COMPREPLY=($(compgen -W "-y --non-interactive --version --all-repos --allow-outdated-changelog --overwrite --keep-unreleased --update-deps --no-update-deps --add-missing-deps --no-add-missing-deps --help -h" -- "$cur"))
             else
                 compopt -o filenames 2>/dev/null
                 local IFS=$'\n'
@@ -59,24 +59,24 @@ _broforce_tools_completions()
                 local IFS=$'\n'
                 COMPREPLY=($(compgen -W "$(_get_projects package)" -- "$cur"))
             elif [[ "$cur" == -* ]]; then
-                COMPREPLY=($(compgen -W "-y --non-interactive --all-repos --package-all --package --help" -- "$cur"))
+                COMPREPLY=($(compgen -W "-y --non-interactive --all-repos --package-all --package --help -h" -- "$cur"))
             fi
             ;;
         deps)
             if [[ "$cur" == -* ]]; then
-                COMPREPLY=($(compgen -W "-r --refresh --help" -- "$cur"))
+                COMPREPLY=($(compgen -W "-r --refresh --help -h" -- "$cur"))
             fi
             ;;
         changelog)
             # Handle changelog subcommands
             if [ $COMP_CWORD -eq 2 ]; then
-                COMPREPLY=($(compgen -W "add show edit --help" -- "$cur"))
+                COMPREPLY=($(compgen -W "add show edit --help -h" -- "$cur"))
             else
                 local changelog_subcommand="${COMP_WORDS[2]}"
                 case "$changelog_subcommand" in
                     add|show|edit)
                         if [[ "$cur" == -* ]]; then
-                            COMPREPLY=($(compgen -W "-y --non-interactive --all-repos --help" -- "$cur"))
+                            COMPREPLY=($(compgen -W "-y --non-interactive --all-repos --help -h" -- "$cur"))
                         else
                             compopt -o filenames 2>/dev/null
                             local IFS=$'\n'
@@ -89,7 +89,7 @@ _broforce_tools_completions()
         config)
             # Handle config subcommands
             if [ $COMP_CWORD -eq 2 ]; then
-                COMPREPLY=($(compgen -W "show path edit set add-repo remove-repo init --help" -- "$cur"))
+                COMPREPLY=($(compgen -W "show path edit set add-repo remove-repo init --help -h" -- "$cur"))
             else
                 local config_subcommand="${COMP_WORDS[2]}"
                 case "$config_subcommand" in
@@ -106,7 +106,7 @@ _broforce_tools_completions()
                         ;;
                     init)
                         if [[ "$cur" == -* ]]; then
-                            COMPREPLY=($(compgen -W "-y --non-interactive --help" -- "$cur"))
+                            COMPREPLY=($(compgen -W "-y --non-interactive --help -h" -- "$cur"))
                         fi
                         ;;
                 esac

@@ -1,14 +1,10 @@
 #!/usr/bin/env python3
-"""Helper for bash completion - minimal output for fast completion."""
+"""Helper for shell completion - minimal output for fast completion."""
 import sys
 
 
-def main():
-    if len(sys.argv) < 2:
-        return
-
-    mode = sys.argv[1]
-
+def emit_completions(mode: str) -> None:
+    """Print one completion candidate per line for the given mode."""
     from .config import load_config
     from .paths import get_repos_parent, TemplatesDirNotFound
     from .project import find_projects
@@ -31,6 +27,12 @@ def main():
         projects = find_projects(repos_parent, repos, require_metadata=True)
         for project in projects:
             print(project.name)
+
+
+def main():
+    if len(sys.argv) < 2:
+        return
+    emit_completions(sys.argv[1])
 
 
 if __name__ == '__main__':

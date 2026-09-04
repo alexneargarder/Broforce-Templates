@@ -67,10 +67,45 @@ def _merge_configs(base: dict, override: dict) -> dict:
     merged = dict(base)
     for key, value in override.items():
         if key in merged and isinstance(merged[key], dict) and isinstance(value, dict):
-            merged[key] = {**merged[key], **value}
+            merged[key] = _merge_configs(merged[key], value)
         else:
             merged[key] = value
     return merged
+
+
+NIX_OPTION_FOR_KEY = {
+    'repos_parent': 'programs.broforce-tools.reposParent',
+    'release_dir': 'programs.broforce-tools.releaseDir',
+    'repos': 'programs.broforce-tools.repos',
+    'ignore': 'programs.broforce-tools.ignore',
+    'defaults.namespace': 'programs.broforce-tools.defaults.namespace',
+    'defaults.website_url': 'programs.broforce-tools.defaults.websiteUrl',
+}
+
+
+def load_user_config() -> dict:
+    """Load the imperative config written by 'bt config' commands."""
+    _migrate_old_windows_config()
+    return _load_json_file(get_config_file()) or {}
+
+
+def load_nix_config() -> dict:
+    """Load the declarative config written by the NixOS activation script."""
+    return _load_json_file(get_nix_config_file()) or {}
+
+
+def nix_managed_option(key: str) -> Optional[str]:
+    """Return the NixOS option that owns a config key, or None if it is free to set."""
+    option = NIX_OPTION_FOR_KEY.get(key)
+    if not option:
+        return None
+
+    value = load_nix_config()
+    for part in key.split('.'):
+        if not isinstance(value, dict) or part not in value:
+            return None
+        value = value[part]
+    return option
 
 
 def load_config() -> dict:
@@ -80,7 +115,7 @@ def load_config() -> dict:
     - config.nix.json: Declarative, written by NixOS activation script
     - config.json: Imperative, written by 'bt config' commands
 
-    User config (config.json) takes precedence over Nix config.
+    Nix config (config.nix.json) takes precedence over user config.
 
     Returns dict with 'repos' key (list of repo names) and optional keys:
     - 'defaults': dict with 'namespace' and 'website_url'
@@ -88,13 +123,11 @@ def load_config() -> dict:
     - 'repos_parent': path to parent directory containing repos
     - 'release_dir': path to central directory for release zip copies
     """
-    _migrate_old_windows_config()
-
-    nix_config = _load_json_file(get_nix_config_file())
-    user_config = _load_json_file(get_config_file())
+    user_config = load_user_config()
+    nix_config = load_nix_config()
 
     if nix_config and user_config:
-        return _merge_configs(nix_config, user_config)
+        return _merge_configs(user_config, nix_config)
     elif user_config:
         return user_config
     elif nix_config:

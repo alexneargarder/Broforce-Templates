@@ -8,6 +8,9 @@ from broforce_tools.cli import app
 from broforce_tools.config import (
     get_config_file,
     load_config,
+    load_nix_config,
+    load_user_config,
+    nix_managed_option,
     save_config,
     get_configured_repos,
     get_defaults,
@@ -157,23 +160,24 @@ class TestConfigMerge:
         config = load_config()
         assert config["repos"] == ["UserRepo"]
 
-    def test_user_overrides_nix(self, isolated_config):
+    def test_nix_overrides_user(self, isolated_config):
         nix = {"repos": ["NixRepo"], "repos_parent": "~/nix-repos"}
-        user = {"repos": ["UserRepo"]}
+        user = {"repos": ["UserRepo"], "templates_dir": "/user/templates"}
         (isolated_config / "config.nix.json").write_text(json.dumps(nix))
         (isolated_config / "config.json").write_text(json.dumps(user))
         config = load_config()
-        assert config["repos"] == ["UserRepo"]
+        assert config["repos"] == ["NixRepo"]
         assert config["repos_parent"] == "~/nix-repos"
+        assert config["templates_dir"] == "/user/templates"
 
     def test_nested_dict_merge(self, isolated_config):
-        nix = {"repos": [], "defaults": {"namespace": "NixUser", "website_url": "https://nix"}}
-        user = {"repos": [], "defaults": {"namespace": "OverriddenUser"}}
+        nix = {"repos": [], "defaults": {"namespace": "NixUser"}}
+        user = {"repos": [], "defaults": {"namespace": "UserName", "website_url": "https://user"}}
         (isolated_config / "config.nix.json").write_text(json.dumps(nix))
         (isolated_config / "config.json").write_text(json.dumps(user))
         config = load_config()
-        assert config["defaults"]["namespace"] == "OverriddenUser"
-        assert config["defaults"]["website_url"] == "https://nix"
+        assert config["defaults"]["namespace"] == "NixUser"
+        assert config["defaults"]["website_url"] == "https://user"
 
     def test_neither_exists(self, isolated_config):
         config = load_config()
@@ -250,3 +254,68 @@ class TestConfigCommands:
         result = runner.invoke(app, ["config", "remove-repo", "Nope"])
         assert result.exit_code == 0
         assert "not in" in result.output
+
+
+def _write_nix_config(config_dir, data):
+    (config_dir / "config.nix.json").write_text(json.dumps(data))
+
+
+class TestNixManagedOption:
+    def test_key_present_in_nix_config(self, isolated_config):
+        _write_nix_config(isolated_config, {"repos_parent": "~/nix-repos"})
+        assert nix_managed_option("repos_parent") == "programs.broforce-tools.reposParent"
+
+    def test_key_absent_from_nix_config(self, isolated_config):
+        _write_nix_config(isolated_config, {"repos": ["NixRepo"]})
+        assert nix_managed_option("repos_parent") is None
+
+    def test_dotted_key(self, isolated_config):
+        _write_nix_config(isolated_config, {"defaults": {"website_url": "https://nix"}})
+        assert nix_managed_option("defaults.website_url") == "programs.broforce-tools.defaults.websiteUrl"
+        assert nix_managed_option("defaults.namespace") is None
+
+    def test_key_without_nix_option(self, isolated_config):
+        _write_nix_config(isolated_config, {"templates_dir": "/nix/templates"})
+        assert nix_managed_option("templates_dir") is None
+
+    def test_no_nix_config(self, isolated_config):
+        assert nix_managed_option("repos_parent") is None
+
+
+class TestNixManagedRefusal:
+    def test_set_refuses_managed_key(self, isolated_config):
+        _write_nix_config(isolated_config, {"repos_parent": "~/nix-repos"})
+        result = runner.invoke(app, ["config", "set", "repos_parent", "/tmp/repos"])
+        assert result.exit_code == 1
+        assert "programs.broforce-tools.reposParent" in result.output
+        assert not (isolated_config / "config.json").exists()
+
+    def test_set_refuses_managed_dotted_key(self, isolated_config):
+        _write_nix_config(isolated_config, {"defaults": {"namespace": "NixUser"}})
+        result = runner.invoke(app, ["config", "set", "defaults.namespace", "Someone"])
+        assert result.exit_code == 1
+        assert "programs.broforce-tools.defaults.namespace" in result.output
+
+    def test_add_repo_refuses_managed_repos(self, isolated_config):
+        _write_nix_config(isolated_config, {"repos": ["NixRepo"]})
+        result = runner.invoke(app, ["config", "add-repo", "MyRepo"])
+        assert result.exit_code == 1
+        assert "programs.broforce-tools.repos" in result.output
+
+    def test_remove_repo_refuses_managed_repos(self, isolated_config):
+        _write_nix_config(isolated_config, {"repos": ["NixRepo"]})
+        result = runner.invoke(app, ["config", "remove-repo", "NixRepo"])
+        assert result.exit_code == 1
+        assert "programs.broforce-tools.repos" in result.output
+
+    def test_set_unmanaged_key_writes_only_user_keys(self, isolated_config):
+        _write_nix_config(isolated_config, {
+            "repos": ["NixRepo"],
+            "repos_parent": "~/nix-repos",
+            "defaults": {"namespace": "NixUser"},
+        })
+        result = runner.invoke(app, ["config", "set", "templates_dir", "/tmp/templates"])
+        assert result.exit_code == 0
+        assert load_user_config() == {"templates_dir": "/tmp/templates"}
+        assert load_nix_config()["repos"] == ["NixRepo"]
+        assert load_config()["repos_parent"] == "~/nix-repos"

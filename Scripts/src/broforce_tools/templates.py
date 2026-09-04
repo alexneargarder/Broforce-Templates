@@ -24,12 +24,16 @@ def _make_writable(path: str) -> None:
             os.chmod(file_path, os.stat(file_path).st_mode | stat.S_IWUSR)
 
 
+IGNORED_COPY_NAMES = {'.vs', '.idea', 'bin', 'obj'}
+IGNORED_COPY_SUFFIXES = ('.suo', '.user')
+
+
 def copyanything(src: str, dst: str) -> None:
-    """Copy directory tree, ignoring VS user-specific files."""
+    """Copy directory tree, ignoring build output and IDE files."""
     def ignore_patterns(path, names):
         ignored = []
         for name in names:
-            if name == '.vs' or name.endswith('.suo') or name.endswith('.user'):
+            if name in IGNORED_COPY_NAMES or name.endswith(IGNORED_COPY_SUFFIXES):
                 ignored.append(name)
         return ignored
 

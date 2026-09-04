@@ -1,12 +1,43 @@
 """Shared test fixtures for broforce-tools."""
 import json
 import os
+import time
 from pathlib import Path
 
 import pytest
 
+from broforce_tools import thunderstore
+
 FIXTURES_DIR = Path(__file__).parent.parent / "test-fixtures"
 FIXTURES_REPOS = FIXTURES_DIR / "repos"
+
+STUB_DEPENDENCY_VERSIONS = {
+    "UMM": "1.0.0",
+    "RocketLib": "2.0.0",
+    "BroMaker": "3.0.0",
+    "DresserMod": "4.0.0",
+}
+
+
+@pytest.fixture(autouse=True)
+def isolated_cache(tmp_path, monkeypatch):
+    """Keep every test off the network and out of the real dependency cache.
+
+    Seeds a fresh cache so commands that need dependency versions can run
+    offline; tests that exercise fetching write or remove the cache themselves.
+    """
+    cache_dir = tmp_path / "cache"
+    monkeypatch.setenv("BROFORCE_CACHE_DIR", str(cache_dir))
+    monkeypatch.setattr(thunderstore, "fetch_thunderstore_version", lambda ns, pkg: None)
+
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    (cache_dir / "dependency_cache.json").write_text(json.dumps({
+        "schema": thunderstore.CACHE_SCHEMA,
+        "timestamp": time.time(),
+        "versions": STUB_DEPENDENCY_VERSIONS,
+        "fallbacks": [],
+    }), encoding="utf-8")
+    return cache_dir
 
 
 @pytest.fixture

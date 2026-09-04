@@ -3,7 +3,9 @@ import click.exceptions
 import filecmp
 import json
 import os
+import shlex
 import shutil
+import subprocess
 import time
 from typing import NoReturn, Optional
 
@@ -13,7 +15,16 @@ import typer
 from . import __version__
 from .colors import Colors, init_colors
 from .paths import TemplatesDirNotFound
-from .config import get_config_file, get_configured_repos, get_defaults, get_nix_config_file, load_config, save_config
+from .config import (
+    get_config_file,
+    get_configured_repos,
+    get_defaults,
+    get_nix_config_file,
+    load_config,
+    load_user_config,
+    nix_managed_option,
+    save_config,
+)
 from .paths import get_repos_parent, get_templates_dir, get_config_dir, is_windows
 from .project_types import PROJECT_TYPES, get_type_names, get_display_names
 from .project import (
@@ -30,9 +41,12 @@ from .templates import (
 )
 from .thunderstore import (
     CACHE_DURATION,
+    FETCH_RETRY_INTERVAL,
+    DependencyVersionsUnavailable,
     add_changelog_entry,
     check_missing_required,
     clear_cache,
+    fail_dependency_versions,
     do_init_thunderstore,
     do_package,
     find_changelog,
@@ -103,6 +117,19 @@ def _complete_repos(incomplete: str) -> list[str]:
 def _complete_none(incomplete: str) -> list[str]:
     """Return empty list to prevent file completion fallback."""
     return []
+
+
+def _split_editor(editor: str, fallback: str = '') -> list[str]:
+    """Split an EDITOR/VISUAL setting into argv without mangling Windows paths."""
+    posix = not is_windows()
+    tokens = shlex.split(editor, posix=posix)
+    if not posix:
+        tokens = [
+            token[1:-1] if len(token) >= 2 and token[0] == token[-1] and token[0] in '"\''
+            else token
+            for token in tokens
+        ]
+    return tokens or [fallback]
 
 
 def _run_batch(projects: list[Project], action, **kwargs) -> None:
@@ -382,6 +409,13 @@ def do_create_project(
     # Check for missing required values in non-interactive mode
     check_missing_required(missing)
 
+    bromaker_version = None
+    if template_type == "bro":
+        try:
+            bromaker_version = get_dependency_versions()['BroMaker']
+        except DependencyVersionsUnavailable as e:
+            fail_dependency_versions(e)
+
     # Optional: add RocketLib dependency for mods
     if not with_rocketlib and not non_interactive and template_type == "mod":
         with_rocketlib = questionary.confirm(
@@ -403,21 +437,17 @@ def do_create_project(
         targets_dest = os.path.join(output_scripts_dir, 'BroforceModBuild.targets')
 
         if os.path.exists(targets_source):
-            try:
-                if not os.path.exists(targets_dest):
+            if not os.path.exists(targets_dest):
+                try:
                     shutil.copy2(targets_source, targets_dest)
                     print(f"{Colors.GREEN}Copied BroforceModBuild.targets to output repository{Colors.ENDC}")
-                else:
-                    if not filecmp.cmp(targets_source, targets_dest, shallow=False):
-                        try:
-                            shutil.copy2(targets_source, targets_dest)
-                            print(f"{Colors.GREEN}Updated BroforceModBuild.targets in output repository{Colors.ENDC}")
-                        except PermissionError:
-                            print(f"{Colors.WARNING}Warning: Could not update BroforceModBuild.targets (file in use){Colors.ENDC}")
-                    else:
-                        print(f"{Colors.BLUE}BroforceModBuild.targets already up-to-date{Colors.ENDC}")
-            except PermissionError:
-                print(f"{Colors.WARNING}Warning: Could not copy BroforceModBuild.targets (file in use){Colors.ENDC}")
+                except PermissionError:
+                    print(f"{Colors.WARNING}Warning: Could not copy BroforceModBuild.targets (file in use){Colors.ENDC}")
+            elif filecmp.cmp(targets_source, targets_dest, shallow=False):
+                print(f"{Colors.BLUE}BroforceModBuild.targets already up-to-date{Colors.ENDC}")
+            else:
+                print(f"{Colors.WARNING}Warning: {targets_dest} differs from the bundled BroforceModBuild.targets and was left unchanged{Colors.ENDC}")
+                print(f"{Colors.CYAN}Run Broforce-Templates/Scripts/sync-targets.sh to update it.{Colors.ENDC}")
         else:
             print(f"{Colors.WARNING}Warning: BroforceModBuild.targets not found in template repo{Colors.ENDC}")
 
@@ -448,10 +478,6 @@ def do_create_project(
 
         if template_type == "bro":
             find_replace(newRepoPath, "BroTemplate.cs", f"{newNameNoSpaces}.cs", "*.csproj")
-
-            dep_versions = get_dependency_versions()
-            bromaker_version = dep_versions.get('BroMaker', '2.6.0')
-
             find_replace(newRepoPath, "BROMAKER_VERSION", bromaker_version, "*.json")
 
         if with_rocketlib and type_info["has_code"]:
@@ -644,8 +670,6 @@ def _interactive_changelog_add(repos_parent: str) -> None:
 
 def _interactive_changelog_edit(repos_parent: str) -> None:
     """Open a changelog in an editor via interactive project selection."""
-    import shlex
-    import subprocess
 
     result = _select_project_for_changelog(repos_parent)
     if not result:
@@ -658,7 +682,7 @@ def _interactive_changelog_edit(repos_parent: str) -> None:
     print(f"{Colors.CYAN}Opening {changelog_path} in {editor}...{Colors.ENDC}")
 
     try:
-        editor_cmd = shlex.split(editor) + [changelog_path]
+        editor_cmd = _split_editor(editor, fallback) + [changelog_path]
         subprocess.run(editor_cmd, check=True)
     except FileNotFoundError:
         print(f"{Colors.FAIL}Error: Editor '{editor.split()[0]}' not found{Colors.ENDC}")
@@ -775,6 +799,15 @@ def main_callback(
         _interactive_config(repos_parent)
     elif choice == "deps":
         deps(refresh=False)
+
+
+@app.command("__complete", hidden=True)
+def complete_helper(
+    mode: str = typer.Argument(..., help="Completion list to emit: repos, init, or package"),
+):
+    """Emit shell-completion candidates, one per line."""
+    from .completion_helper import emit_completions
+    emit_completions(mode)
 
 
 @app.command()
@@ -1043,12 +1076,13 @@ def deps(
     cache_file = get_cache_file()
 
     if refresh:
-        clear_cache()
         print(f"{Colors.CYAN}Fetching latest versions from Thunderstore...{Colors.ENDC}")
-        versions = get_dependency_versions()
+    try:
+        versions = get_dependency_versions(force_refresh=refresh)
+    except DependencyVersionsUnavailable as e:
+        fail_dependency_versions(e)
+    if refresh:
         print(f"{Colors.GREEN}Cache refreshed.{Colors.ENDC}\n")
-    else:
-        versions = get_dependency_versions()
 
     fallbacks = set()
     if cache_file.exists():
@@ -1062,7 +1096,7 @@ def deps(
     print(f"{Colors.HEADER}Dependency versions:{Colors.ENDC}")
     for name, version in sorted(versions.items()):
         if name in fallbacks:
-            print(f"  {name}: {version} {Colors.WARNING}(fallback - API unreachable){Colors.ENDC}")
+            print(f"  {name}: {version} {Colors.WARNING}(not fetched - API unreachable){Colors.ENDC}")
         else:
             print(f"  {name}: {version}")
 
@@ -1078,7 +1112,8 @@ def deps(
                 age_str = f"{int(age_seconds / 60)}m"
             else:
                 age_str = f"{age_seconds / 3600:.1f}h"
-            expires_in = CACHE_DURATION - age_seconds
+            ttl = FETCH_RETRY_INTERVAL if cache_data.get('fallbacks') else CACHE_DURATION
+            expires_in = ttl - age_seconds
             if expires_in > 0:
                 if expires_in < 3600:
                     exp_str = f"{int(expires_in / 60)}m"
@@ -1269,10 +1304,8 @@ def changelog_edit(
     editor = os.environ.get('EDITOR', os.environ.get('VISUAL', fallback))
     print(f"{Colors.CYAN}Opening {changelog_path} in {editor}...{Colors.ENDC}")
 
-    import shlex
-    import subprocess
     try:
-        editor_cmd = shlex.split(editor) + [changelog_path]
+        editor_cmd = _split_editor(editor, fallback) + [changelog_path]
         subprocess.run(editor_cmd, check=True)
     except FileNotFoundError:
         print(f"{Colors.FAIL}Error: Editor '{editor.split()[0]}' not found{Colors.ENDC}")
@@ -1406,6 +1439,14 @@ CONFIG_SETTABLE_KEYS = {
 }
 
 
+def _refuse_if_nix_managed(key: str) -> None:
+    """Exit if a config key is owned by the NixOS module."""
+    option = nix_managed_option(key)
+    if option:
+        print(f"{Colors.FAIL}Error: '{key}' is managed by NixOS option {option}; change it in your NixOS configuration{Colors.ENDC}")
+        raise typer.Exit(1)
+
+
 @config_app.command("show")
 def config_show():
     """Print current config file path and contents."""
@@ -1426,7 +1467,7 @@ def config_show():
         return
 
     if has_nix and has_user:
-        print(f"\n{Colors.CYAN}Merged config (user overrides nix):{Colors.ENDC}")
+        print(f"\n{Colors.CYAN}Merged config (nix overrides user):{Colors.ENDC}")
     elif has_nix:
         print(f"\n{Colors.CYAN}Config (from nix):{Colors.ENDC}")
 
@@ -1444,8 +1485,6 @@ def config_path():
 def config_edit():
     """Open config file in $EDITOR."""
     init_colors()
-    import shlex
-    import subprocess
     config_file = get_config_file()
     if not config_file.exists():
         from .paths import ensure_dir
@@ -1457,7 +1496,7 @@ def config_edit():
     editor = os.environ.get('EDITOR', os.environ.get('VISUAL', fallback))
     print(f"{Colors.CYAN}Opening {config_file} in {editor}...{Colors.ENDC}")
     try:
-        editor_cmd = shlex.split(editor) + [str(config_file)]
+        editor_cmd = _split_editor(editor, fallback) + [str(config_file)]
         subprocess.run(editor_cmd, check=True)
     except FileNotFoundError:
         print(f"{Colors.FAIL}Error: Editor '{editor.split()[0]}' not found{Colors.ENDC}")
@@ -1482,7 +1521,9 @@ def config_set(
             print(f"  {k:30s} {desc}")
         raise typer.Exit(1)
 
-    config = load_config()
+    _refuse_if_nix_managed(key)
+
+    config = load_user_config()
 
     if '.' in key:
         section, subkey = key.split('.', 1)
@@ -1513,6 +1554,7 @@ def config_add_repo(
 ):
     """Add a repo to the configured repos list."""
     init_colors()
+    _refuse_if_nix_managed('repos')
     if name is None or (isinstance(name, str) and name == ''):
         try:
             repos_parent = str(get_repos_parent())
@@ -1528,7 +1570,7 @@ def config_add_repo(
     else:
         repo_name = os.path.basename(os.path.normpath(name))
 
-    config = load_config()
+    config = load_user_config()
     repos = config.get('repos', [])
 
     if repo_name in repos:
@@ -1553,7 +1595,8 @@ def config_remove_repo(
 ):
     """Remove a repo from the configured repos list."""
     init_colors()
-    config = load_config()
+    _refuse_if_nix_managed('repos')
+    config = load_user_config()
     repos = config.get('repos', [])
 
     if name in repos:
@@ -1590,25 +1633,40 @@ def config_init(
         if not overwrite:
             raise typer.Exit()
 
-    config = {'repos': []}
-
     if non_interactive:
         print(f"{Colors.FAIL}Error: Interactive setup requires a terminal{Colors.ENDC}")
         print(f"Use {Colors.CYAN}bt config set <key> <value>{Colors.ENDC} instead")
         raise typer.Exit(1)
 
-    # repos_parent
-    default_parent = '~/repos' if not is_windows() else ''
-    repos_parent_str = questionary.text(
-        "Parent directory containing your mod repos:",
-        default=default_parent,
-    ).ask()
-    if repos_parent_str is None:
-        raise typer.Exit()
-    if repos_parent_str:
-        config['repos_parent'] = repos_parent_str
+    def skip_managed(key: str) -> bool:
+        option = nix_managed_option(key)
+        if option:
+            print(f"{Colors.BLUE}Skipping '{key}' - managed by NixOS option {option}{Colors.ENDC}")
+            return True
+        return False
 
-        # Auto-detect repos
+    config = {}
+
+    ask_repos = not skip_managed('repos')
+    if ask_repos:
+        config['repos'] = []
+
+    # repos_parent
+    if skip_managed('repos_parent'):
+        repos_parent_str = load_config().get('repos_parent', '')
+    else:
+        default_parent = '~/repos' if not is_windows() else ''
+        repos_parent_str = questionary.text(
+            "Parent directory containing your mod repos:",
+            default=default_parent,
+        ).ask()
+        if repos_parent_str is None:
+            raise typer.Exit()
+        if repos_parent_str:
+            config['repos_parent'] = repos_parent_str
+
+    # Auto-detect repos
+    if ask_repos and repos_parent_str:
         expanded = os.path.expanduser(repos_parent_str)
         if os.path.isdir(expanded):
             dirs = sorted([
@@ -1625,28 +1683,31 @@ def config_init(
                     config['repos'] = selected
 
     # Namespace
-    namespace = questionary.text(
-        "Default Thunderstore namespace (author name):",
-        default='',
-    ).ask()
-    if namespace:
-        config.setdefault('defaults', {})['namespace'] = namespace
+    if not skip_managed('defaults.namespace'):
+        namespace = questionary.text(
+            "Default Thunderstore namespace (author name):",
+            default='',
+        ).ask()
+        if namespace:
+            config.setdefault('defaults', {})['namespace'] = namespace
 
     # Website URL
-    website = questionary.text(
-        "Default website URL (e.g., GitHub repo URL):",
-        default='',
-    ).ask()
-    if website:
-        config.setdefault('defaults', {})['website_url'] = website
+    if not skip_managed('defaults.website_url'):
+        website = questionary.text(
+            "Default website URL (e.g., GitHub repo URL):",
+            default='',
+        ).ask()
+        if website:
+            config.setdefault('defaults', {})['website_url'] = website
 
     # Release directory
-    release_dir = questionary.text(
-        "Central release directory (leave empty to skip):",
-        default='',
-    ).ask()
-    if release_dir:
-        config['release_dir'] = release_dir
+    if not skip_managed('release_dir'):
+        release_dir = questionary.text(
+            "Central release directory (leave empty to skip):",
+            default='',
+        ).ask()
+        if release_dir:
+            config['release_dir'] = release_dir
 
     if save_config(config):
         print(f"\n{Colors.GREEN}Config saved to: {config_file}{Colors.ENDC}")

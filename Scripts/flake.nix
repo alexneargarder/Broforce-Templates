@@ -9,85 +9,44 @@
     let
       systems = [ "x86_64-linux" "aarch64-linux" ];
       forAllSystems = nixpkgs.lib.genAttrs systems;
+      btVersion = (builtins.fromTOML (builtins.readFile ./pyproject.toml)).project.version;
     in
     {
       packages = forAllSystems (system:
         let
           pkgs = nixpkgs.legacyPackages.${system};
-
-          pythonWithDeps = pkgs.python3.withPackages (ps: with ps; [
-            typer
-            questionary
-            rich
-            shellingham
-          ]);
-
+          python3 = pkgs.python3;
         in
         {
-          default = pkgs.stdenv.mkDerivation {
+          default = python3.pkgs.buildPythonApplication {
             pname = "broforce-tools";
-            version = "1.0.0";
+            version = btVersion;
 
+            # pyproject.toml lives in Scripts/, but setup.py's build_py bundles the
+            # templates from the repo root, so the whole repo is the source.
             src = ./..;
+            setSourceRoot = "sourceRoot=$(echo */Scripts)";
 
-            nativeBuildInputs = [ pkgs.makeWrapper ];
+            pyproject = true;
 
-            buildInputs = [ pythonWithDeps ];
+            build-system = [ python3.pkgs.setuptools ];
 
-            installPhase = ''
-              runHook preInstall
+            dependencies = with python3.pkgs; [
+              typer
+              questionary
+              rich
+              shellingham
+            ];
 
-              # Create directories
-              mkdir -p $out/bin
-              mkdir -p $out/lib/python3/site-packages
-              mkdir -p $out/share/broforce-tools
+            pythonImportsCheck = [ "broforce_tools" ];
 
-              # Copy Python package
-              cp -r Scripts/src/broforce_tools $out/lib/python3/site-packages/
+            makeWrapperArgs = [ "--set BROFORCE_TEMPLATES_DIR ${placeholder "out"}/${python3.sitePackages}/broforce_tools/templates" ];
 
-              # Copy templates to share directory
-              cp -r "Bro Template" $out/share/broforce-tools/
-              cp -r "Mod Template" $out/share/broforce-tools/
-              cp -r "ThunderstorePackage" $out/share/broforce-tools/
-              cp -r "Wardrobe Template" $out/share/broforce-tools/
-
-              # Copy BroforceModBuild.targets
-              mkdir -p $out/share/broforce-tools/Scripts
-              cp Scripts/BroforceModBuild.targets $out/share/broforce-tools/Scripts/
-
-              # Create wrapper script
-              cat > $out/bin/broforce-tools << 'WRAPPER'
-#!/usr/bin/env python3
-import sys
-import os
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'lib', 'python3', 'site-packages'))
-from broforce_tools import main
-main()
-WRAPPER
-              chmod +x $out/bin/broforce-tools
-
-              # Create bt alias
-              ln -s $out/bin/broforce-tools $out/bin/bt
-
-              # Patch shebangs
-              patchShebangs $out/bin/broforce-tools
-
-              # Wrap script with environment
-              wrapProgram $out/bin/broforce-tools \
-                --set BROFORCE_TEMPLATES_DIR "$out/share/broforce-tools" \
-                --prefix PATH : ${pkgs.lib.makeBinPath [ pythonWithDeps ]}
-
+            postInstall = ''
               # Install bash completion
               mkdir -p $out/share/bash-completion/completions
-              cp Scripts/completions/broforce-tools $out/share/bash-completion/completions/broforce-tools
+              cp completions/broforce-tools $out/share/bash-completion/completions/broforce-tools
               ln -s broforce-tools $out/share/bash-completion/completions/bt
-
-              # Patch completion script for Nix
-              substituteInPlace $out/share/bash-completion/completions/broforce-tools \
-                --replace-fail 'python3 -m broforce_tools' \
-                "PYTHONPATH=\"$out/lib/python3/site-packages\" ${pythonWithDeps}/bin/python3 -m broforce_tools"
-
-              runHook postInstall
             '';
 
             meta = with pkgs.lib; {
@@ -95,6 +54,7 @@ WRAPPER
               homepage = "https://github.com/alexneargarder/Broforce-Templates";
               license = licenses.mit;
               platforms = platforms.linux;
+              mainProgram = "bt";
               maintainers = [ ];
             };
           };
@@ -174,7 +134,13 @@ EOF
               type = types.nullOr types.str;
               default = null;
               example = "~/repos";
-              description = "Parent directory containing Broforce mod repositories.";
+              description = ''
+                Parent directory containing Broforce mod repositories.
+
+                Note: the activation script always writes its generated config to
+                `~/.config/broforce-tools/config.nix.json`, ignoring any per-user
+                `XDG_CONFIG_HOME` override.
+              '';
             };
 
             releaseDir = mkOption {
@@ -262,17 +228,18 @@ EOF
                   website_url = cfg.defaults.websiteUrl;
                 };
               });
-            in mkIf (cfg.repos != [] || cfg.reposParent != null || cfg.releaseDir != null || cfg.defaults.namespace != null) ''
+            in mkIf (cfg.repos != [] || cfg.reposParent != null || cfg.releaseDir != null
+                     || cfg.ignore != {} || cfg.defaults.namespace != null
+                     || cfg.defaults.websiteUrl != null) ''
               for user_home in /home/*; do
-                if [ -d "$user_home" ]; then
-                  user_name=$(basename "$user_home")
+                # Skip users without an existing ~/.config so we never create it as root.
+                if [ -d "$user_home/.config" ]; then
+                  home_owner=$(stat -c %u:%g "$user_home")
                   config_dir="$user_home/.config/broforce-tools"
 
                   mkdir -p "$config_dir"
-                  chown "$user_name:users" "$config_dir"
-
                   echo '${configJson}' > "$config_dir/config.nix.json"
-                  chown "$user_name:users" "$config_dir/config.nix.json"
+                  chown "$home_owner" "$config_dir" "$config_dir/config.nix.json"
                 fi
               done
             '';
