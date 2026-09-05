@@ -3,7 +3,8 @@
 # sync-targets.sh - propagate canonical build files from Broforce-Templates
 # to the consumer repos that carry copies of them.
 #
-# Usage: sync-targets.sh [-n|--dry-run] [--check] [-r|--repo NAME]... [-h|--help]
+# Usage: sync-targets.sh [-n|--dry-run] [--check] [-r|--repo NAME]...
+#                        [-p|--repo-path NAME=PATH]... [-h|--help]
 #
 #   -n, --dry-run     Report what would change and print a unified diff for each
 #                     differing file. Writes nothing. Always exits 0.
@@ -11,6 +12,12 @@
 #                     copy differs from the canonical file. For scripting/CI.
 #   -r, --repo NAME   Restrict the sync to consumer NAME. Repeatable. NAME must
 #                     be one of the consumers listed in this script.
+#   -p, --repo-path NAME=PATH
+#                     Sync consumer NAME at directory PATH instead of its usual
+#                     location, and select NAME as if --repo NAME were given.
+#                     Repeatable, at most one override per consumer. Use it to
+#                     sync into a git worktree of a consumer whose shared
+#                     checkout is on another branch.
 #   -h, --help        Show this help and exit.
 #
 # Synced files (canonical copies live in this directory), each checked at a
@@ -73,10 +80,52 @@ is_consumer() {
     return 1
 }
 
+require_consumer() {
+    is_consumer "$1" && return 0
+    echo "error: unknown repo: $1" >&2
+    echo "known consumers: ${CONSUMERS[*]}" >&2
+    exit 1
+}
+
 DRY_RUN=0
 SHOW_DIFF=0
 CHECK=0
 SELECTED_REPOS=()
+declare -A REPO_PATH_OVERRIDES=()
+
+select_repo() {
+    local repo="$1" selected
+    for selected in ${SELECTED_REPOS[@]+"${SELECTED_REPOS[@]}"}; do
+        [[ "$selected" == "$repo" ]] && return 0
+    done
+    SELECTED_REPOS+=("$repo")
+}
+
+add_repo_path() {
+    local spec="$1" repo path
+    [[ "$spec" == *=* ]] || die "--repo-path expects NAME=PATH, got: $spec"
+    repo="${spec%%=*}"
+    path="${spec#*=}"
+    [[ -n "$repo" && -n "$path" ]] || die "--repo-path expects NAME=PATH, got: $spec"
+    require_consumer "$repo"
+    [[ -z "${REPO_PATH_OVERRIDES[$repo]:-}" ]] || die "--repo-path given twice for $repo"
+    [[ -d "$path" ]] || die "--repo-path directory does not exist: $path"
+    REPO_PATH_OVERRIDES[$repo]="$path"
+    select_repo "$repo"
+}
+
+repo_dir_for() {
+    printf '%s\n' "${REPO_PATH_OVERRIDES[$1]:-$REPOS_DIR/$1}"
+}
+
+# Repo name for output, with the override path appended when one is in effect.
+repo_label_for() {
+    if [[ -n "${REPO_PATH_OVERRIDES[$1]:-}" ]]; then
+        printf '%s (%s)\n' "$1" "${REPO_PATH_OVERRIDES[$1]}"
+    else
+        printf '%s\n' "$1"
+    fi
+}
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -90,11 +139,19 @@ while [[ $# -gt 0 ]]; do
             ;;
         -r|--repo)
             [[ $# -ge 2 ]] || die "$1 requires a repository name"
-            SELECTED_REPOS+=("$2")
+            select_repo "$2"
             shift
             ;;
         -r=*|--repo=*)
-            SELECTED_REPOS+=("${1#*=}")
+            select_repo "${1#*=}"
+            ;;
+        -p|--repo-path)
+            [[ $# -ge 2 ]] || die "$1 requires NAME=PATH"
+            add_repo_path "$2"
+            shift
+            ;;
+        -p=*|--repo-path=*)
+            add_repo_path "${1#*=}"
             ;;
         -h|--help)
             usage
@@ -115,11 +172,7 @@ if [[ $CHECK -eq 1 ]]; then
 fi
 
 for repo in ${SELECTED_REPOS[@]+"${SELECTED_REPOS[@]}"}; do
-    if ! is_consumer "$repo"; then
-        echo "error: unknown repo: $repo" >&2
-        echo "known consumers: ${CONSUMERS[*]}" >&2
-        exit 1
-    fi
+    require_consumer "$repo"
 done
 
 if [[ ${#SELECTED_REPOS[@]} -gt 0 ]]; then
@@ -139,6 +192,11 @@ echo "  repos:     $REPOS_DIR"
 if [[ ${#SELECTED_REPOS[@]} -gt 0 ]]; then
     echo "  limited to: ${SELECTED_REPOS[*]}"
 fi
+for repo in "${TARGET_REPOS[@]}"; do
+    if [[ -n "${REPO_PATH_OVERRIDES[$repo]:-}" ]]; then
+        echo "  path override: $repo -> ${REPO_PATH_OVERRIDES[$repo]}"
+    fi
+done
 if [[ $CHECK -eq 1 ]]; then
     echo "  (check mode - nothing will be written)"
 elif [[ $DRY_RUN -eq 1 ]]; then
@@ -155,17 +213,18 @@ PRESENT_REPOS=()
 DIFFERENCES=0
 
 for repo in "${TARGET_REPOS[@]}"; do
-    repo_dir="$REPOS_DIR/$repo"
+    repo_dir="$(repo_dir_for "$repo")"
+    repo_label="$(repo_label_for "$repo")"
 
     if [[ ! -d "$repo_dir" ]]; then
-        echo "$repo"
+        echo "$repo_label"
         echo "  absent        no such directory: $repo_dir"
         echo ""
         ABSENT_REPOS+=("$repo")
         continue
     fi
 
-    echo "$repo"
+    echo "$repo_label"
     PRESENT_REPOS+=("$repo")
     UPDATED_COUNT[$repo]=0
     UNCHANGED_COUNT[$repo]=0
@@ -212,10 +271,11 @@ for repo in ${PRESENT_REPOS[@]+"${PRESENT_REPOS[@]}"}; do
     updated="${UPDATED_COUNT[$repo]}"
     unchanged="${UNCHANGED_COUNT[$repo]}"
     missing="${MISSING_COUNT[$repo]}"
+    repo_label="$(repo_label_for "$repo")"
     if [[ $DRY_RUN -eq 1 ]]; then
-        line="  $repo: $updated would update, $unchanged unchanged"
+        line="  $repo_label: $updated would update, $unchanged unchanged"
     else
-        line="  $repo: $updated updated, $unchanged unchanged"
+        line="  $repo_label: $updated updated, $unchanged unchanged"
     fi
     if [[ $missing -gt 0 ]]; then
         line="$line, $missing missing"
@@ -223,7 +283,7 @@ for repo in ${PRESENT_REPOS[@]+"${PRESENT_REPOS[@]}"}; do
     echo "$line"
 
     if [[ $DRY_RUN -eq 0 && $updated -gt 0 ]]; then
-        repo_dir="$REPOS_DIR/$repo"
+        repo_dir="$(repo_dir_for "$repo")"
         if git -C "$repo_dir" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
             mapfile -t paths <<< "${UPDATED_PATHS[$repo]%$'\n'}"
             status_out="$(git -C "$repo_dir" status --short -- "${paths[@]}" || true)"
