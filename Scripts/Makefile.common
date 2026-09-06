@@ -31,7 +31,8 @@
 #   PROJECT=<name>    - Scope the cleanup targets to one discovered project
 #
 # In AUTO_DISCOVER mode and with a .sln SOLUTION, `build` and `rebuild` build every project with
-# launching disabled and then launch the game once through a separate `/t:LaunchOnly` MSBuild invocation.
+# launching disabled and then, unless LAUNCH=no, launch the game once through a separate
+# `/t:LaunchOnly` MSBuild invocation.
 
 # MSBuild configuration - override with: make MSBUILD="/path/to/msbuild" build
 # Detect if running in WSL (Windows Subsystem for Linux)
@@ -49,6 +50,9 @@ MSBUILD_FLAGS := /p:Configuration=Release /verbosity:minimal /nologo
 
 # LAUNCH variable controls both kill and launch behavior
 # Usage: make build LAUNCH=no
+ifdef CLAUDECODE
+    LAUNCH ?= no
+endif
 ifeq ($(LAUNCH),no)
     LAUNCH_FLAGS := /p:CloseBroforceOnBuild=false /p:LaunchBroforceOnBuild=false
 else
@@ -316,13 +320,15 @@ endif
 	@echo ""
 	@echo "Options:"
 	@echo "  LAUNCH=no               Don't kill or launch game"
+	@echo "  LAUNCH=yes              Kill and launch game"
 	@echo "  INSTALL=no              Don't copy DLL to game directory"
 	@echo "  LAUNCH_ARGS=\"...\"       Forward extra args to the launch command"
 	@echo "  PROJECT=<name>          Scope cleanup to one project (AUTO_DISCOVER only)"
 	@echo ""
 	@echo "Examples:"
-	@echo "  make build                  Build everything and launch the game"
+	@echo "  make build                  Build everything, then launch the game unless LAUNCH=no"
 	@echo "  make build LAUNCH=no        Build without disrupting running game"
+	@echo "  make build LAUNCH=yes       Build and relaunch the game"
 	@echo "  make build INSTALL=no       Build without installing to game"
 
 # Build targets - can be overridden by setting CUSTOM_BUILD=1 before including

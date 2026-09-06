@@ -17,6 +17,11 @@
   <!-- Import local props second (overrides global) -->
   <Import Project="$(LocalBroforceProps)" Condition="'$(LocalBroforceProps)' != ''" />
 
+  <PropertyGroup Condition="'$(CLAUDECODE)' != ''">
+    <CloseBroforceOnBuild>false</CloseBroforceOnBuild>
+    <LaunchBroforceOnBuild>false</LaunchBroforceOnBuild>
+  </PropertyGroup>
+
   <PropertyGroup>
     <!-- Windows default -->
     <BroforcePath Condition="'$(BroforcePath)' == '' AND '$(OS)' == 'Windows_NT'">C:\Program Files (x86)\Steam\steamapps\common\Broforce</BroforcePath>
