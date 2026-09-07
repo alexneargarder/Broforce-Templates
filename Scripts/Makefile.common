@@ -248,6 +248,8 @@ _RESOLVE_CLEANUP_TARGETS = while IFS= read -r f; do \
 	  esac; \
 	done
 
+# --target=Restore: jb restores the solution instead of building it, so the net35 reference
+# assemblies resolve (they come from a PackageReference) and the Build target's game steps never run.
 .PHONY: cleanup
 cleanup:
 	$(_CHECK_JB)
@@ -261,7 +263,7 @@ cleanup:
 	fi
 	@$(_CLEANUP_LIST_CMD) | $(_RESOLVE_CLEANUP_TARGETS) | while IFS= read -r t; do \
 	  echo "Cleaning up $$t..."; \
-	  $(JB) cleanupcode "$$t" --settings="$(CLEANUP_SETTINGS)" --profile="$(CLEANUP_PROFILE)" || exit 1; \
+	  $(JB) cleanupcode "$$t" --target=Restore --settings="$(CLEANUP_SETTINGS)" --profile="$(CLEANUP_PROFILE)" || exit 1; \
 	done
 
 .PHONY: cleanup-changed
@@ -299,7 +301,7 @@ cleanup-changed:
 	  fi; \
 	  INCL=$$(echo "$$SCOPED" | paste -sd';' -); \
 	  echo "Cleaning up changed files in $$t..."; \
-	  $(JB) cleanupcode "$$t" --settings="$(CLEANUP_SETTINGS)" --profile="$(CLEANUP_PROFILE)" --include="$$INCL" || exit 1; \
+	  $(JB) cleanupcode "$$t" --target=Restore --settings="$(CLEANUP_SETTINGS)" --profile="$(CLEANUP_PROFILE)" --include="$$INCL" || exit 1; \
 	done
 
 .PHONY: help

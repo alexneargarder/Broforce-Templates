@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 #
 # sync-targets.sh - propagate canonical build files from Broforce-Templates
-# to the consumer repos that carry copies of them.
+# to the synced repos that carry copies of them.
 #
 # Usage: sync-targets.sh [-n|--dry-run] [--check] [-r|--repo NAME]...
 #                        [-p|--repo-path NAME=PATH]... [-h|--help]
@@ -10,32 +10,34 @@
 #                     differing file. Writes nothing. Always exits 0.
 #       --check       Like --dry-run but without diffs; exits 1 if any existing
 #                     copy differs from the canonical file. For scripting/CI.
-#   -r, --repo NAME   Restrict the sync to consumer NAME. Repeatable. NAME must
-#                     be one of the consumers listed in this script.
+#   -r, --repo NAME   Restrict the sync to synced repo NAME. Repeatable. NAME must
+#                     be one of the synced repos listed in this script.
 #   -p, --repo-path NAME=PATH
-#                     Sync consumer NAME at directory PATH instead of its usual
+#                     Sync repo NAME at directory PATH instead of its usual
 #                     location, and select NAME as if --repo NAME were given.
-#                     Repeatable, at most one override per consumer. Use it to
-#                     sync into a git worktree of a consumer whose shared
+#                     Repeatable, at most one override per repo. Use it to
+#                     sync into a git worktree of a synced repo whose shared
 #                     checkout is on another branch.
 #   -h, --help        Show this help and exit.
 #
-# Synced files (canonical copies live in this directory), each checked at a
-# fixed location inside every consumer repo:
+# Synced files, each checked at a fixed location inside every synced repo.
+# Canonical copies live in this directory, except .editorconfig, whose canonical
+# copy is at the Broforce-Templates root:
 #   Scripts/BroforceModBuild.targets
 #   LocalBroforcePath.example.props
 #   Scripts/Makefile.common
 #   Scripts/BroforceMods.DotSettings
+#   .editorconfig
 #
-# A file that does not exist in a consumer is reported as "missing" and is never
-# created - copy it in by hand if that repo should carry it. A consumer that is
+# A file that does not exist in a synced repo is reported as "missing" and is never
+# created - copy it in by hand if that repo should carry it. A synced repo that is
 # not checked out on this machine is reported as "absent" and skipped.
 
 set -euo pipefail
 
 # Authoritative list of repos that carry synced copies of the build files;
-# adding a new consumer means adding its directory name here.
-CONSUMERS=(
+# adding a synced repo means adding its directory name here.
+SYNCED_REPOS=(
     BroforceMods
     Bro-Maker
     Bro-Maker-abilities
@@ -46,22 +48,33 @@ CONSUMERS=(
     CustomBros
 )
 
-# Fixed location of each synced file inside a consumer repo; the canonical copy
-# is the same basename in this directory.
+# Fixed location of each synced file inside a synced repo; canonical_for maps
+# each one to its canonical copy.
 SYNC_PATHS=(
     "Scripts/BroforceModBuild.targets"
     "LocalBroforcePath.example.props"
     "Scripts/Makefile.common"
     "Scripts/BroforceMods.DotSettings"
+    ".editorconfig"
 )
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+TEMPLATES_ROOT="$(dirname "$SCRIPT_DIR")"
 REPOS_DIR="$(dirname "$(dirname "$SCRIPT_DIR")")"
 # When run from a worktree (<repo>/.worktrees/<name>/Scripts) the grandparent is
 # the .worktrees directory; walk out to the real repos root.
 if [[ "$(basename "$REPOS_DIR")" == ".worktrees" ]]; then
     REPOS_DIR="$(dirname "$(dirname "$REPOS_DIR")")"
 fi
+
+# Canonical copy of a synced file: the same basename in this directory, except
+# the root .editorconfig, which is canonical at the Broforce-Templates root.
+canonical_for() {
+    case "$1" in
+        .editorconfig) printf '%s\n' "$TEMPLATES_ROOT/$1" ;;
+        *)             printf '%s\n' "$SCRIPT_DIR/$(basename "$1")" ;;
+    esac
+}
 
 usage() {
     awk 'NR > 2 { if ($0 !~ /^#/) exit; sub(/^# ?/, ""); print }' "${BASH_SOURCE[0]}"
@@ -72,18 +85,18 @@ die() {
     exit 1
 }
 
-is_consumer() {
-    local candidate="$1" consumer
-    for consumer in "${CONSUMERS[@]}"; do
-        [[ "$consumer" == "$candidate" ]] && return 0
+is_synced_repo() {
+    local candidate="$1" repo
+    for repo in "${SYNCED_REPOS[@]}"; do
+        [[ "$repo" == "$candidate" ]] && return 0
     done
     return 1
 }
 
-require_consumer() {
-    is_consumer "$1" && return 0
+require_synced_repo() {
+    is_synced_repo "$1" && return 0
     echo "error: unknown repo: $1" >&2
-    echo "known consumers: ${CONSUMERS[*]}" >&2
+    echo "known synced repos: ${SYNCED_REPOS[*]}" >&2
     exit 1
 }
 
@@ -107,7 +120,7 @@ add_repo_path() {
     repo="${spec%%=*}"
     path="${spec#*=}"
     [[ -n "$repo" && -n "$path" ]] || die "--repo-path expects NAME=PATH, got: $spec"
-    require_consumer "$repo"
+    require_synced_repo "$repo"
     [[ -z "${REPO_PATH_OVERRIDES[$repo]:-}" ]] || die "--repo-path given twice for $repo"
     [[ -d "$path" ]] || die "--repo-path directory does not exist: $path"
     REPO_PATH_OVERRIDES[$repo]="$path"
@@ -172,17 +185,17 @@ if [[ $CHECK -eq 1 ]]; then
 fi
 
 for repo in ${SELECTED_REPOS[@]+"${SELECTED_REPOS[@]}"}; do
-    require_consumer "$repo"
+    require_synced_repo "$repo"
 done
 
 if [[ ${#SELECTED_REPOS[@]} -gt 0 ]]; then
     TARGET_REPOS=("${SELECTED_REPOS[@]}")
 else
-    TARGET_REPOS=("${CONSUMERS[@]}")
+    TARGET_REPOS=("${SYNCED_REPOS[@]}")
 fi
 
 for rel_path in "${SYNC_PATHS[@]}"; do
-    canonical="$SCRIPT_DIR/$(basename "$rel_path")"
+    canonical="$(canonical_for "$rel_path")"
     [[ -f "$canonical" ]] || die "canonical file missing: $canonical"
 done
 
@@ -232,7 +245,7 @@ for repo in "${TARGET_REPOS[@]}"; do
     UPDATED_PATHS[$repo]=""
 
     for rel_path in "${SYNC_PATHS[@]}"; do
-        canonical="$SCRIPT_DIR/$(basename "$rel_path")"
+        canonical="$(canonical_for "$rel_path")"
         copy="$repo_dir/$rel_path"
 
         if [[ ! -f "$copy" ]]; then
