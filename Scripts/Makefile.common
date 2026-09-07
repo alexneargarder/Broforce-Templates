@@ -21,6 +21,10 @@
 #                        EXCLUDE := ExampleMod "Bro Template" mission-impossibro
 #   CLEANUP_SETTINGS - Path to ReSharper .DotSettings file (default: Scripts/BroforceMods.DotSettings)
 #   CLEANUP_PROFILE  - Cleanup profile name (default: BroforceMods)
+#   CLEANUP_EXCLUDE  - Paths or globs jb cleanupcode skips, relative to the solution and
+#                      separated by ";", no quotes even around spaces. In AUTO_DISCOVER repos
+#                      the solution sits in <Project>/, so entries start with the project
+#                      directory (e.g. Mod/Lib/**;Mod/Gen*.cs).
 #   JB               - jb binary (default: jb; override for dotnet local tools: JB="dotnet jb")
 #
 # Command-line variables:
@@ -92,7 +96,13 @@ _LAUNCH_ONLY = "$(MSBUILD)" $(1) /t:LaunchOnly $(MSBUILD_FLAGS) /p:CloseBroforce
 # Code cleanup configuration (JetBrains ReSharper CLI)
 CLEANUP_SETTINGS ?= Scripts/BroforceMods.DotSettings
 CLEANUP_PROFILE ?= BroforceMods
+CLEANUP_EXCLUDE ?=
 JB ?= jb
+# Normalise the list: drop spaces around ";" and a trailing ";", so a multi-line value works
+_empty :=
+_space := $(_empty) $(_empty)
+_CLEANUP_EXCLUDE_LIST = $(patsubst %;,%,$(subst ;$(_space),;,$(subst $(_space);,;,$(strip $(CLEANUP_EXCLUDE)))))
+_CLEANUP_EXCLUDE_FLAG = $(if $(_CLEANUP_EXCLUDE_LIST),--exclude="$(_CLEANUP_EXCLUDE_LIST)")
 
 # For solution builds: extract first .csproj to use for single launch at end
 # (avoids launching once per project in multi-project solutions)
@@ -263,7 +273,7 @@ cleanup:
 	fi
 	@$(_CLEANUP_LIST_CMD) | $(_RESOLVE_CLEANUP_TARGETS) | while IFS= read -r t; do \
 	  echo "Cleaning up $$t..."; \
-	  $(JB) cleanupcode "$$t" --target=Restore --settings="$(CLEANUP_SETTINGS)" --profile="$(CLEANUP_PROFILE)" || exit 1; \
+	  $(JB) cleanupcode "$$t" --target=Restore --settings="$(CLEANUP_SETTINGS)" --profile="$(CLEANUP_PROFILE)" $(_CLEANUP_EXCLUDE_FLAG) || exit 1; \
 	done
 
 .PHONY: cleanup-changed
@@ -301,7 +311,7 @@ cleanup-changed:
 	  fi; \
 	  INCL=$$(echo "$$SCOPED" | paste -sd';' -); \
 	  echo "Cleaning up changed files in $$t..."; \
-	  $(JB) cleanupcode "$$t" --target=Restore --settings="$(CLEANUP_SETTINGS)" --profile="$(CLEANUP_PROFILE)" --include="$$INCL" || exit 1; \
+	  $(JB) cleanupcode "$$t" --target=Restore --settings="$(CLEANUP_SETTINGS)" --profile="$(CLEANUP_PROFILE)" $(_CLEANUP_EXCLUDE_FLAG) --include="$$INCL" || exit 1; \
 	done
 
 .PHONY: help
