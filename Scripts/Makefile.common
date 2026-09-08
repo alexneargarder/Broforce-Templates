@@ -31,6 +31,9 @@
 #   MSBUILD=<path>    - MSBuild binary to use
 #   LAUNCH=no         - Don't kill or launch the game
 #   INSTALL=no        - Don't copy built DLLs into the game directory
+#   INSTALL=default   - Install into the Default profile even while isolated
+#   ALLOW_STAGE_REFS=1 - Let INSTALL=default proceed when the mod was compiled against a RocketLib or
+#                      BroMakerLib from this session's private copy
 #   LAUNCH_ARGS="..." - Extra args forwarded to the launch command
 #   PROJECT=<name>    - Scope the cleanup targets to one discovered project
 #
@@ -52,6 +55,13 @@ endif
 
 MSBUILD_FLAGS := /p:Configuration=Release /verbosity:minimal /nologo
 
+# $(call _MSB,<msbuild arguments>) - one msbuild run; a failure ends the recipe
+_MSB = "$(MSBUILD)" $(1) || exit $$?
+
+# Session stage used by isolate/unisolate; BROFORCE_STAGE_ROOT is a test override
+BROFORCE_STAGE_ROOT ?= $(HOME)/.local/share/broforce-stages
+_STAGE_DIR = $(BROFORCE_STAGE_ROOT)/$(CLAUDE_SESSION_ID)
+
 # LAUNCH variable controls both kill and launch behavior
 # Usage: make build LAUNCH=no
 ifdef CLAUDECODE
@@ -63,12 +73,20 @@ else
     LAUNCH_FLAGS := /p:CloseBroforceOnBuild=true /p:LaunchBroforceOnBuild=true
 endif
 
-# INSTALL variable controls whether DLL is copied to game directory
-# Usage: make build INSTALL=no
+# INSTALL variable controls where (or whether) the built DLL is installed
+# Usage: make build INSTALL=no / make build INSTALL=default
 ifeq ($(INSTALL),no)
     INSTALL_FLAGS := /p:SkipInstall=true
-else
+else ifeq ($(INSTALL),default)
+    INSTALL_FLAGS := /p:InstallTo=default
+else ifeq ($(strip $(INSTALL)),)
     INSTALL_FLAGS :=
+else
+    $(error Error: INSTALL must be no or default)
+endif
+
+ifeq ($(ALLOW_STAGE_REFS),1)
+    INSTALL_FLAGS += /p:AllowStageRefs=true
 endif
 
 # LAUNCH_ARGS forwards extra args to the post-build launch command
@@ -91,7 +109,7 @@ endif
 _NO_LAUNCH_FLAGS := /p:CloseBroforceOnBuild=false /p:LaunchBroforceOnBuild=false
 
 # $(call _LAUNCH_ONLY,"<project>") - launch the game without building anything
-_LAUNCH_ONLY = "$(MSBUILD)" $(1) /t:LaunchOnly $(MSBUILD_FLAGS) /p:CloseBroforceOnBuild=false /p:LaunchBroforceOnBuild=true $(LAUNCH_ARGS_FLAGS)
+_LAUNCH_ONLY = $(call _MSB,$(1) /t:LaunchOnly $(MSBUILD_FLAGS) /p:CloseBroforceOnBuild=false /p:LaunchBroforceOnBuild=true $(LAUNCH_ARGS_FLAGS))
 
 # Code cleanup configuration (JetBrains ReSharper CLI)
 CLEANUP_SETTINGS ?= Scripts/BroforceMods.DotSettings
@@ -153,13 +171,13 @@ _EACH_PROJECT = for p in $(_PROJ_PAIRS); do printf '%s\t%s\n' "$${p%%=*}" "$$(pr
 
 define _BUILD_EACH
 @$(_EACH_PROJECT) | cut -f2 | while IFS= read -r csproj; do \
-  "$(MSBUILD)" "$$csproj" $(MSBUILD_FLAGS) $(1) $(INSTALL_FLAGS) $(LAUNCH_ARGS_FLAGS) || exit 1; \
+  $(call _MSB,"$$csproj" $(MSBUILD_FLAGS) $(1) $(INSTALL_FLAGS) $(LAUNCH_ARGS_FLAGS)); \
 done
 endef
 
 define _CLEAN_EACH
 @$(_EACH_PROJECT) | cut -f2 | while IFS= read -r csproj; do \
-  "$(MSBUILD)" "$$csproj" /t:Clean $(MSBUILD_FLAGS) $(INSTALL_FLAGS) $(LAUNCH_ARGS_FLAGS) || exit 1; \
+  $(call _MSB,"$$csproj" /t:Clean $(MSBUILD_FLAGS) $(INSTALL_FLAGS) $(LAUNCH_ARGS_FLAGS)); \
 done
 endef
 
@@ -177,7 +195,7 @@ endef
 ifneq ($(strip $(DISCOVER_TARGETS)),)
 .PHONY: $(DISCOVER_TARGETS)
 $(DISCOVER_TARGETS):
-	@"$(MSBUILD)" "$(call _csproj_for,$@)" $(MSBUILD_FLAGS) $(LAUNCH_FLAGS) $(INSTALL_FLAGS) $(LAUNCH_ARGS_FLAGS)
+	@$(call _MSB,"$(call _csproj_for,$@)" $(MSBUILD_FLAGS) $(LAUNCH_FLAGS) $(INSTALL_FLAGS) $(LAUNCH_ARGS_FLAGS))
 endif
 
 ifeq ($(strip $(_PROJ_PAIRS)),)
@@ -314,6 +332,30 @@ cleanup-changed:
 	  $(JB) cleanupcode "$$t" --target=Restore --settings="$(CLEANUP_SETTINGS)" --profile="$(CLEANUP_PROFILE)" $(_CLEANUP_EXCLUDE_FLAG) --include="$$INCL" || exit 1; \
 	done
 
+.PHONY: isolate
+isolate:
+	@test -n "$(CLAUDE_SESSION_ID)" || { echo "Error: isolate needs CLAUDE_SESSION_ID; there is no session to isolate." >&2; exit 1; }
+	@existed=; [ -d "$(_STAGE_DIR)/UMM" ] && existed=1; \
+	mkdir -p "$(_STAGE_DIR)/UMM/Mods" "$(_STAGE_DIR)/UMM/BroMaker_Storage" "$(_STAGE_DIR)/UMM/Config"; \
+	[ -e "$(_STAGE_DIR)/UMM/.isolated" ] || touch "$(_STAGE_DIR)/UMM/.isolated"; \
+	if [ -n "$$existed" ]; then \
+	  echo "Already isolated at $(_STAGE_DIR)/UMM"; \
+	else \
+	  echo "Isolated. Builds in this session install into $(_STAGE_DIR)/UMM"; \
+	fi; \
+	echo "A running game keeps what it launched with; relaunch it to pick up new builds."
+
+.PHONY: unisolate
+unisolate:
+	@test -n "$(CLAUDE_SESSION_ID)" || { echo "Error: unisolate needs CLAUDE_SESSION_ID; there is no session to unisolate." >&2; exit 1; }
+	@if [ ! -d "$(_STAGE_DIR)" ]; then \
+	  echo "No stage at $(_STAGE_DIR); nothing to remove."; \
+	 else \
+	  find "$(_STAGE_DIR)" -mindepth 1 -maxdepth 3 | sort; \
+	  rm -rf "$(_STAGE_DIR)"; \
+	  echo "Removed $(_STAGE_DIR)"; \
+	 fi
+
 .PHONY: help
 help:
 	@echo "$(PROJECT_NAME) Build System"
@@ -325,6 +367,8 @@ help:
 	@echo "  make rebuild            Clean, then build all projects"
 	@echo "  make cleanup            Run ReSharper code cleanup on all code"
 	@echo "  make cleanup-changed    Run ReSharper code cleanup on git-changed files"
+	@echo "  make isolate            Build into a private copy of the mods folder for this session"
+	@echo "  make unisolate          Delete that private copy and build into the shared mods folder again"
 ifdef EXTRA_HELP
 	@echo ""
 	@$(EXTRA_HELP)
@@ -334,6 +378,8 @@ endif
 	@echo "  LAUNCH=no               Don't kill or launch game"
 	@echo "  LAUNCH=yes              Kill and launch game"
 	@echo "  INSTALL=no              Don't copy DLL to game directory"
+	@echo "  INSTALL=default         Install into the shared mods folder even while isolated"
+	@echo "  ALLOW_STAGE_REFS=1      Let INSTALL=default proceed when the mod was compiled against a RocketLib or BroMakerLib from the private copy"
 	@echo "  LAUNCH_ARGS=\"...\"       Forward extra args to the launch command"
 	@echo "  PROJECT=<name>          Scope cleanup to one project (AUTO_DISCOVER only)"
 	@echo ""
@@ -349,13 +395,13 @@ ifndef CUSTOM_BUILD
 ifdef IS_SOLUTION
 # Solution build: build all with launching disabled, then launch once via LaunchOnly
 define _SOLUTION_BUILD
-"$(MSBUILD)" $(SOLUTION) $(MSBUILD_FLAGS) $(_BUILD_ONLY_FLAGS) $(INSTALL_FLAGS) $(LAUNCH_ARGS_FLAGS)
+@$(call _MSB,$(SOLUTION) $(MSBUILD_FLAGS) $(_BUILD_ONLY_FLAGS) $(INSTALL_FLAGS) $(LAUNCH_ARGS_FLAGS))
 $(if $(_DO_LAUNCH),$(if $(strip $(LAUNCH_PROJECT)),$(call _LAUNCH_ONLY,"$(LAUNCH_PROJECT)"),@echo "Error: no project found in $(SOLUTION) to launch"; exit 1))
 endef
 else
 # Single project build: the build itself launches
 define _SOLUTION_BUILD
-"$(MSBUILD)" $(SOLUTION) $(MSBUILD_FLAGS) $(LAUNCH_FLAGS) $(INSTALL_FLAGS) $(LAUNCH_ARGS_FLAGS)
+@$(call _MSB,$(SOLUTION) $(MSBUILD_FLAGS) $(LAUNCH_FLAGS) $(INSTALL_FLAGS) $(LAUNCH_ARGS_FLAGS))
 endef
 endif
 
@@ -365,11 +411,11 @@ build:
 
 .PHONY: build-no-launch
 build-no-launch:
-	"$(MSBUILD)" $(SOLUTION) $(MSBUILD_FLAGS) $(_NO_LAUNCH_FLAGS) $(INSTALL_FLAGS) $(LAUNCH_ARGS_FLAGS)
+	@$(call _MSB,$(SOLUTION) $(MSBUILD_FLAGS) $(_NO_LAUNCH_FLAGS) $(INSTALL_FLAGS) $(LAUNCH_ARGS_FLAGS))
 
 .PHONY: clean
 clean:
-	"$(MSBUILD)" $(SOLUTION) /t:Clean $(MSBUILD_FLAGS) $(INSTALL_FLAGS) $(LAUNCH_ARGS_FLAGS)
+	@$(call _MSB,$(SOLUTION) /t:Clean $(MSBUILD_FLAGS) $(INSTALL_FLAGS) $(LAUNCH_ARGS_FLAGS))
 
 .PHONY: rebuild
 rebuild: clean

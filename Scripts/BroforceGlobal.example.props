@@ -36,6 +36,9 @@
     <!-- Show detailed build messages (default: false) -->
     <VerboseBuildOutput>false</VerboseBuildOutput>
 
+    <!-- Game processes whose working directory is under it are not closed by the build -->
+    <!-- <BroforceInstancesRoot>/path/to/instances</BroforceInstancesRoot> -->
+
     <!-- Library path for DLL references (adjust to your libs location) -->
     <LibPath>$(MSBuildThisFileDirectory)YourRepo/libs</LibPath>
 

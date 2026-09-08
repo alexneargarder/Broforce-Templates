@@ -36,5 +36,8 @@
     <!-- <UseHardLinksForInstall>false</UseHardLinksForInstall> -->
     <!-- <VerboseBuildOutput>false</VerboseBuildOutput> -->
 
+    <!-- Game processes whose working directory is under it are not closed by the build -->
+    <!-- <BroforceInstancesRoot>/path/to/instances</BroforceInstancesRoot> -->
+
   </PropertyGroup>
 </Project>
