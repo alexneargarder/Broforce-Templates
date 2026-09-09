@@ -67,8 +67,26 @@ _STAGE_DIR = $(BROFORCE_STAGE_ROOT)/$(CLAUDE_SESSION_ID)
 ifdef CLAUDECODE
     LAUNCH ?= no
 endif
+
+# An explicit LAUNCH=no also turns off relaunching this session's own game instance; the
+# default LAUNCH=no above leaves it on
+ifneq ($(filter command line environment,$(origin LAUNCH)),)
+    ifeq ($(LAUNCH),no)
+        RELAUNCH_FLAGS := /p:RelaunchInstanceOnBuild=false
+    endif
+endif
+# Relaunching this session's own instance is Linux-only and needs both session variables, the
+# same conditions the RelaunchInstanceOnBuild default uses
+ifndef IS_WSL
+ifneq ($(OS),Windows_NT)
+ifneq ($(and $(strip $(CLAUDECODE)),$(strip $(CLAUDE_SESSION_ID))),)
+    _DO_RELAUNCH := $(if $(RELAUNCH_FLAGS),,1)
+endif
+endif
+endif
+
 ifeq ($(LAUNCH),no)
-    LAUNCH_FLAGS := /p:CloseBroforceOnBuild=false /p:LaunchBroforceOnBuild=false
+    LAUNCH_FLAGS := /p:CloseBroforceOnBuild=false /p:LaunchBroforceOnBuild=false $(RELAUNCH_FLAGS)
 else
     LAUNCH_FLAGS := /p:CloseBroforceOnBuild=true /p:LaunchBroforceOnBuild=true
 endif
@@ -97,7 +115,8 @@ else
     LAUNCH_ARGS_FLAGS :=
 endif
 
-# Flags for the build half of build/rebuild: never launch from the build itself
+# Flags for the build half of build/rebuild: never launch from the build itself, and leave the
+# instance relaunch to the single run at the end
 ifeq ($(LAUNCH),no)
     _BUILD_ONLY_FLAGS := /p:CloseBroforceOnBuild=false /p:LaunchBroforceOnBuild=false
     _DO_LAUNCH :=
@@ -105,11 +124,14 @@ else
     _BUILD_ONLY_FLAGS := /p:CloseBroforceOnBuild=true /p:LaunchBroforceOnBuild=false
     _DO_LAUNCH := 1
 endif
+_BUILD_ONLY_FLAGS += /p:DeferInstanceRelaunch=true $(RELAUNCH_FLAGS)
 
-_NO_LAUNCH_FLAGS := /p:CloseBroforceOnBuild=false /p:LaunchBroforceOnBuild=false
+_NO_LAUNCH_FLAGS := /p:CloseBroforceOnBuild=false /p:LaunchBroforceOnBuild=false /p:RelaunchInstanceOnBuild=false
 
-# $(call _LAUNCH_ONLY,"<project>") - launch the game without building anything
-_LAUNCH_ONLY = $(call _MSB,$(1) /t:LaunchOnly $(MSBUILD_FLAGS) /p:CloseBroforceOnBuild=false /p:LaunchBroforceOnBuild=true $(LAUNCH_ARGS_FLAGS))
+# $(call _POST_BUILD,"<project>") - one msbuild run after building every project: launches the
+# game when LAUNCH is on, and relaunches this session's own game instance when one is running
+_POST_BUILD = $(call _MSB,$(1) /t:LaunchOnly $(MSBUILD_FLAGS) /p:CloseBroforceOnBuild=false /p:LaunchBroforceOnBuild=$(if $(_DO_LAUNCH),true,false) /p:RelaunchAfterInstall=true $(INSTALL_FLAGS) $(RELAUNCH_FLAGS) $(LAUNCH_ARGS_FLAGS))
+_DO_POST_BUILD := $(if $(_DO_LAUNCH)$(_DO_RELAUNCH),1)
 
 # Code cleanup configuration (JetBrains ReSharper CLI)
 CLEANUP_SETTINGS ?= Scripts/BroforceMods.DotSettings
@@ -183,7 +205,7 @@ endef
 
 define _DISCOVER_BUILD
 $(call _BUILD_EACH,$(_BUILD_ONLY_FLAGS))
-$(if $(_DO_LAUNCH),@$(call _LAUNCH_ONLY,"$(_FIRST_CSPROJ)"))
+$(if $(_DO_POST_BUILD),@$(call _POST_BUILD,"$(_FIRST_CSPROJ)"))
 endef
 
 define EXTRA_HELP
@@ -396,7 +418,7 @@ ifdef IS_SOLUTION
 # Solution build: build all with launching disabled, then launch once via LaunchOnly
 define _SOLUTION_BUILD
 @$(call _MSB,$(SOLUTION) $(MSBUILD_FLAGS) $(_BUILD_ONLY_FLAGS) $(INSTALL_FLAGS) $(LAUNCH_ARGS_FLAGS))
-$(if $(_DO_LAUNCH),$(if $(strip $(LAUNCH_PROJECT)),$(call _LAUNCH_ONLY,"$(LAUNCH_PROJECT)"),@echo "Error: no project found in $(SOLUTION) to launch"; exit 1))
+$(if $(_DO_POST_BUILD),$(if $(strip $(LAUNCH_PROJECT)),$(call _POST_BUILD,"$(LAUNCH_PROJECT)"),@echo "Error: no project found in $(SOLUTION) to launch"; exit 1))
 endef
 else
 # Single project build: the build itself launches

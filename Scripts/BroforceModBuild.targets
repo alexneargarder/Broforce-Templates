@@ -61,6 +61,9 @@
     <BroforceInstallLockWait Condition="'$(BroforceInstallLockWait)' == ''">120</BroforceInstallLockWait>
     <BroforceInstancesRoot Condition="'$(BroforceInstancesRoot)' == ''"></BroforceInstancesRoot>
     <AllowStageRefs Condition="'$(AllowStageRefs)' == ''">false</AllowStageRefs>
+    <RelaunchInstanceOnBuild Condition="'$(RelaunchInstanceOnBuild)' == '' AND '$(IsLinux)' == 'true' AND '$(CLAUDECODE)' != '' AND '$(CLAUDE_SESSION_ID)' != ''">true</RelaunchInstanceOnBuild>
+    <RelaunchInstanceOnBuild Condition="'$(RelaunchInstanceOnBuild)' == ''">false</RelaunchInstanceOnBuild>
+    <DeferInstanceRelaunch Condition="'$(DeferInstanceRelaunch)' == ''">false</DeferInstanceRelaunch>
 
     <BroforceInstallRoot Condition="'$(BroforceInstallRoot)' == '' AND '$(InstallTo)' == 'default'">$(BroforcePath)</BroforceInstallRoot>
     <BroforceInstallRoot Condition="'$(BroforceInstallRoot)' == '' AND '$(BroforceStageExists)' == 'true'">$(BroforceSessionStage)</BroforceInstallRoot>
@@ -246,6 +249,44 @@
              Condition="Exists('$(XmlDocPath)') AND '$(VerboseBuildOutput)' == 'true'" />
   </Target>
 
+  <!-- Runs before the kill step and before anything under the install root is touched, so a
+       refusal leaves the instance running the build it already has; the kill would otherwise
+       stop the instance first and hide it from the status check.
+       %24 is MSBuild's escape for a literal $. Exec rewrites every backslash in the command to a
+       forward slash, so nothing here may rely on one -->
+  <Target Name="CheckInstanceRelaunch" BeforeTargets="KillGameProcessLinux;InstallToGame"
+          Condition="'$(IsLinux)' == 'true' AND '$(SkipInstall)' != 'true' AND '$(RelaunchInstanceOnBuild)' == 'true' AND '$(InstallTarget)' != 'custom'">
+    <Exec Command="if command -v bf &gt;/dev/null 2&gt;&amp;1; then s=`bf instance &quot;$(CLAUDE_SESSION_ID)&quot; status 2&gt;/dev/null`; case &quot;%24s&quot; in running=1*) echo running;; *) echo stopped;; esac; else echo nobf; fi"
+          ConsoleToMSBuild="true" IgnoreExitCode="true" StandardOutputImportance="low">
+      <Output TaskParameter="ConsoleOutput" PropertyName="_InstanceStatus" />
+    </Exec>
+
+    <Message Importance="low" Condition="'$(_InstanceStatus)' == 'nobf'"
+             Text="bf is not on PATH; instance $(CLAUDE_SESSION_ID) was not checked." />
+    <Message Importance="low" Condition="'$(_InstanceStatus)' == 'stopped'"
+             Text="Instance $(CLAUDE_SESSION_ID) is not running; nothing to relaunch." />
+
+    <Exec Condition="'$(_InstanceStatus)' == 'running'"
+          Command="if command -v claude-session &gt;/dev/null 2&gt;&amp;1; then j=`claude-session lock status broforce-game --json 2&gt;/dev/null`; else j=; fi; if command -v jq &gt;/dev/null 2&gt;&amp;1; then h=`printf '%s' &quot;%24j&quot; | jq -r '.held' 2&gt;/dev/null`; hid=`printf '%s' &quot;%24j&quot; | jq -r '.holder.session_id // &quot;&quot;' 2&gt;/dev/null`; hn=`printf '%s' &quot;%24j&quot; | jq -r '.holder.session_name // &quot;&quot;' 2&gt;/dev/null`; else h=`printf '%s' &quot;%24j&quot; | grep -Eo '&quot;held&quot;[^,}]*' | head -n 1 | grep -Eo 'true|false'`; hid=`printf '%s' &quot;%24j&quot; | grep -Eo '&quot;session_id&quot;[[:space:]]*:[[:space:]]*&quot;[^&quot;]*&quot;' | head -n 1 | cut -d'&quot;' -f4`; hn=`printf '%s' &quot;%24j&quot; | grep -Eo '&quot;session_name&quot;[[:space:]]*:[[:space:]]*&quot;[^&quot;]*&quot;' | head -n 1 | cut -d'&quot;' -f4`; fi; if [ &quot;%24h&quot; != 'true' ] &amp;&amp; [ &quot;%24h&quot; != 'false' ]; then echo 'could not be checked'; elif [ &quot;%24h&quot; = 'false' ]; then echo 'is free'; elif [ &quot;%24hid&quot; = '$(CLAUDE_SESSION_ID)' ]; then echo ok; else [ -n &quot;%24hn&quot; ] || hn=&quot;%24hid&quot;; [ -n &quot;%24hn&quot; ] || hn='another session'; echo &quot;is held by %24hn&quot;; fi"
+          ConsoleToMSBuild="true" IgnoreExitCode="true" StandardOutputImportance="low">
+      <Output TaskParameter="ConsoleOutput" PropertyName="_InstanceLockState" />
+    </Exec>
+
+    <PropertyGroup>
+      <_InstanceRelaunchDue Condition="'$(_InstanceStatus)' == 'running' AND '$(_InstanceLockState)' == 'ok'">true</_InstanceRelaunchDue>
+    </PropertyGroup>
+
+    <!-- The post-build LaunchOnly run installs nothing of its own, so it gets the variant that
+         does not claim the install was skipped -->
+    <Error Code="BRO0008"
+           Condition="'$(_InstanceStatus)' == 'running' AND '$(_InstanceLockState)' != 'ok' AND '$(RelaunchAfterInstall)' != 'true'"
+           Text="Instance $(CLAUDE_SESSION_ID) is running, so this build has to relaunch it after installing, but the broforce-game lock $(_InstanceLockState). Nothing was installed. Take the lock with 'cs lock take broforce-game --queue', build with LAUNCH=no to install without relaunching, or stop the instance." />
+
+    <Error Code="BRO0008"
+           Condition="'$(_InstanceStatus)' == 'running' AND '$(_InstanceLockState)' != 'ok' AND '$(RelaunchAfterInstall)' == 'true'"
+           Text="This build is installed, but instance $(CLAUDE_SESSION_ID) is still running the previous one: the broforce-game lock $(_InstanceLockState). Take the lock with 'cs lock take broforce-game --queue' and rebuild, or relaunch the instance yourself." />
+  </Target>
+
   <Target Name="InstallToGame" AfterTargets="Build" DependsOnTargets="DetectProjectType"
           Condition="'$(SkipInstall)' != 'true'">
     <MakeDir Directories="$(ProjectDir)$(ModContentFolder)" />
@@ -365,6 +406,21 @@
     <Message Text="Cleaned cache files" Importance="low" Condition="'@(CacheFiles)' != ''" />
   </Target>
 
+  <Target Name="RelaunchInstance" AfterTargets="CleanCacheFiles"
+          Condition="'$(_InstanceRelaunchDue)' == 'true' AND '$(DeferInstanceRelaunch)' != 'true'">
+    <Exec Command="bf instance &quot;$(CLAUDE_SESSION_ID)&quot; relaunch" IgnoreExitCode="true">
+      <Output TaskParameter="ExitCode" PropertyName="_InstanceRelaunchExit" />
+    </Exec>
+
+    <Error Code="BRO0009"
+           Condition="'$(_InstanceRelaunchExit)' != '0'"
+           Text="Relaunching instance $(CLAUDE_SESSION_ID) failed with exit code $(_InstanceRelaunchExit); the instance may be stopped." />
+
+    <Message Importance="high"
+             Condition="'$(_InstanceRelaunchExit)' == '0'"
+             Text="Relaunched instance $(CLAUDE_SESSION_ID) on the new build. Call wait_for_game before the next inspector call." />
+  </Target>
+
   <Target Name="LaunchGame" AfterTargets="InstallToGame"
           Condition="'$(LaunchBroforceOnBuild)' == 'true' AND '$(IsWindows)' == 'true'">
     <Exec Command="start &quot;&quot; &quot;steam://rungameid/274190&quot;"
@@ -383,11 +439,12 @@
     <Message Text="Launching Broforce" Importance="high" Condition="'$(VerboseBuildOutput)' == 'true'" />
   </Target>
 
-  <!-- Launch the game without building or installing: msbuild <csproj> /t:LaunchOnly /p:LaunchBroforceOnBuild=true -->
-  <Target Name="LaunchOnly" DependsOnTargets="LaunchGame;LaunchGameLinux">
+  <!-- Launch the game, and relaunch this session's instance, without building or installing:
+       msbuild <csproj> /t:LaunchOnly /p:LaunchBroforceOnBuild=true -->
+  <Target Name="LaunchOnly" DependsOnTargets="CheckInstanceRelaunch;LaunchGame;LaunchGameLinux;RelaunchInstance">
     <Warning Code="BRO0004"
-             Condition="'$(LaunchBroforceOnBuild)' != 'true'"
-             Text="LaunchOnly does nothing unless LaunchBroforceOnBuild=true is passed" />
+             Condition="'$(LaunchBroforceOnBuild)' != 'true' AND '$(RelaunchInstanceOnBuild)' != 'true'"
+             Text="LaunchOnly has nothing to do unless LaunchBroforceOnBuild=true is passed or a running instance of this session is due a relaunch" />
   </Target>
 
 </Project>
