@@ -58,7 +58,7 @@ MSBUILD_FLAGS := /p:Configuration=Release /verbosity:minimal /nologo
 # $(call _MSB,<msbuild arguments>) - one msbuild run; a failure ends the recipe
 _MSB = "$(MSBUILD)" $(1) || exit $$?
 
-# Session stage used by isolate/unisolate; BROFORCE_STAGE_ROOT is a test override
+# Session stage used by unisolate; BROFORCE_STAGE_ROOT is a test override
 BROFORCE_STAGE_ROOT ?= $(HOME)/.local/share/broforce-stages
 _STAGE_DIR = $(BROFORCE_STAGE_ROOT)/$(CLAUDE_SESSION_ID)
 
@@ -354,18 +354,6 @@ cleanup-changed:
 	  $(JB) cleanupcode "$$t" --target=Restore --settings="$(CLEANUP_SETTINGS)" --profile="$(CLEANUP_PROFILE)" $(_CLEANUP_EXCLUDE_FLAG) --include="$$INCL" || exit 1; \
 	done
 
-.PHONY: isolate
-isolate:
-	@test -n "$(CLAUDE_SESSION_ID)" || { echo "Error: isolate needs CLAUDE_SESSION_ID; there is no session to isolate." >&2; exit 1; }
-	@existed=; [ -d "$(_STAGE_DIR)/UMM" ] && existed=1; \
-	mkdir -p "$(_STAGE_DIR)/UMM/Mods" "$(_STAGE_DIR)/UMM/BroMaker_Storage" "$(_STAGE_DIR)/UMM/Config"; \
-	if [ -n "$$existed" ]; then \
-	  echo "Stage already exists at $(_STAGE_DIR)/UMM"; \
-	else \
-	  echo "Created the stage at $(_STAGE_DIR)/UMM"; \
-	fi; \
-	echo "Builds in this session install there; INSTALL=default promotes a mod into the Default profile."
-
 .PHONY: unisolate
 unisolate:
 	@test -n "$(CLAUDE_SESSION_ID)" || { echo "Error: unisolate needs CLAUDE_SESSION_ID; there is no session to unisolate." >&2; exit 1; }
@@ -388,7 +376,6 @@ help:
 	@echo "  make rebuild            Clean, then build all projects"
 	@echo "  make cleanup            Run ReSharper code cleanup on all code"
 	@echo "  make cleanup-changed    Run ReSharper code cleanup on git-changed files"
-	@echo "  make isolate            Create this session's stage now (builds under a session create it anyway)"
 	@echo "  make unisolate          Delete this session's stage; the next build recreates it"
 ifdef EXTRA_HELP
 	@echo ""
