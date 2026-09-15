@@ -59,7 +59,7 @@
     <BroforceSessionStage Condition="'$(CLAUDE_SESSION_ID)' != ''">$(BroforceStageRoot)/$(CLAUDE_SESSION_ID)/UMM</BroforceSessionStage>
     <BroforceStageExists Condition="'$(BroforceSessionStage)' != '' AND Exists('$(BroforceSessionStage)')">true</BroforceStageExists>
     <BroforceInstallLockWait Condition="'$(BroforceInstallLockWait)' == ''">120</BroforceInstallLockWait>
-    <BroforceInstancesRoot Condition="'$(BroforceInstancesRoot)' == ''"></BroforceInstancesRoot>
+    <BroforceInstancesRoot Condition="'$(BroforceInstancesRoot)' == ''">$(HOME)/.local/share/broforce-gog/instances</BroforceInstancesRoot>
     <AllowStageRefs Condition="'$(AllowStageRefs)' == ''">false</AllowStageRefs>
     <RelaunchInstanceOnBuild Condition="'$(RelaunchInstanceOnBuild)' == '' AND '$(IsLinux)' == 'true' AND '$(CLAUDECODE)' != '' AND '$(CLAUDE_SESSION_ID)' != ''">true</RelaunchInstanceOnBuild>
     <RelaunchInstanceOnBuild Condition="'$(RelaunchInstanceOnBuild)' == ''">false</RelaunchInstanceOnBuild>
@@ -249,13 +249,13 @@
              Condition="Exists('$(XmlDocPath)') AND '$(VerboseBuildOutput)' == 'true'" />
   </Target>
 
-  <!-- Runs before the kill step and before anything under the install root is touched, so a
-       refusal leaves the instance running the build it already has; the kill would otherwise
-       stop the instance first and hide it from the status check.
+  <!-- Runs before the kill step so a LAUNCH=yes build reads the instance's state before the kill
+       (which skips instance processes under BroforceInstancesRoot anyway). Under
+       DeferInstanceRelaunch the post-build LaunchOnly run decides instead, so the check is skipped.
        %24 is MSBuild's escape for a literal $. Exec rewrites every backslash in the command to a
        forward slash, so nothing here may rely on one -->
   <Target Name="CheckInstanceRelaunch" BeforeTargets="KillGameProcessLinux;InstallToGame"
-          Condition="'$(IsLinux)' == 'true' AND '$(SkipInstall)' != 'true' AND '$(RelaunchInstanceOnBuild)' == 'true' AND '$(InstallTarget)' != 'custom'">
+          Condition="'$(IsLinux)' == 'true' AND '$(SkipInstall)' != 'true' AND '$(RelaunchInstanceOnBuild)' == 'true' AND '$(DeferInstanceRelaunch)' != 'true' AND '$(InstallTarget)' != 'custom'">
     <Exec Command="if command -v bf &gt;/dev/null 2&gt;&amp;1; then s=`bf instance &quot;$(CLAUDE_SESSION_ID)&quot; status 2&gt;/dev/null`; case &quot;%24s&quot; in running=1*) echo running;; *) echo stopped;; esac; else echo nobf; fi"
           ConsoleToMSBuild="true" IgnoreExitCode="true" StandardOutputImportance="low">
       <Output TaskParameter="ConsoleOutput" PropertyName="_InstanceStatus" />
@@ -266,25 +266,9 @@
     <Message Importance="low" Condition="'$(_InstanceStatus)' == 'stopped'"
              Text="Instance $(CLAUDE_SESSION_ID) is not running; nothing to relaunch." />
 
-    <Exec Condition="'$(_InstanceStatus)' == 'running'"
-          Command="if command -v claude-session &gt;/dev/null 2&gt;&amp;1; then j=`claude-session lock status broforce-game --json 2&gt;/dev/null`; else j=; fi; if command -v jq &gt;/dev/null 2&gt;&amp;1; then h=`printf '%s' &quot;%24j&quot; | jq -r '.held' 2&gt;/dev/null`; hid=`printf '%s' &quot;%24j&quot; | jq -r '.holder.session_id // &quot;&quot;' 2&gt;/dev/null`; hn=`printf '%s' &quot;%24j&quot; | jq -r '.holder.session_name // &quot;&quot;' 2&gt;/dev/null`; else h=`printf '%s' &quot;%24j&quot; | grep -Eo '&quot;held&quot;[^,}]*' | head -n 1 | grep -Eo 'true|false'`; hid=`printf '%s' &quot;%24j&quot; | grep -Eo '&quot;session_id&quot;[[:space:]]*:[[:space:]]*&quot;[^&quot;]*&quot;' | head -n 1 | cut -d'&quot;' -f4`; hn=`printf '%s' &quot;%24j&quot; | grep -Eo '&quot;session_name&quot;[[:space:]]*:[[:space:]]*&quot;[^&quot;]*&quot;' | head -n 1 | cut -d'&quot;' -f4`; fi; if [ &quot;%24h&quot; != 'true' ] &amp;&amp; [ &quot;%24h&quot; != 'false' ]; then echo 'could not be checked'; elif [ &quot;%24h&quot; = 'false' ]; then echo 'is free'; elif [ &quot;%24hid&quot; = '$(CLAUDE_SESSION_ID)' ]; then echo ok; else [ -n &quot;%24hn&quot; ] || hn=&quot;%24hid&quot;; [ -n &quot;%24hn&quot; ] || hn='another session'; echo &quot;is held by %24hn&quot;; fi"
-          ConsoleToMSBuild="true" IgnoreExitCode="true" StandardOutputImportance="low">
-      <Output TaskParameter="ConsoleOutput" PropertyName="_InstanceLockState" />
-    </Exec>
-
     <PropertyGroup>
-      <_InstanceRelaunchDue Condition="'$(_InstanceStatus)' == 'running' AND '$(_InstanceLockState)' == 'ok'">true</_InstanceRelaunchDue>
+      <_InstanceRelaunchDue Condition="'$(_InstanceStatus)' == 'running'">true</_InstanceRelaunchDue>
     </PropertyGroup>
-
-    <!-- The post-build LaunchOnly run installs nothing of its own, so it gets the variant that
-         does not claim the install was skipped -->
-    <Error Code="BRO0008"
-           Condition="'$(_InstanceStatus)' == 'running' AND '$(_InstanceLockState)' != 'ok' AND '$(RelaunchAfterInstall)' != 'true'"
-           Text="Instance $(CLAUDE_SESSION_ID) is running, so this build has to relaunch it after installing, but the broforce-game lock $(_InstanceLockState). Nothing was installed. Take the lock with 'cs lock take broforce-game --queue', build with LAUNCH=no to install without relaunching, or stop the instance." />
-
-    <Error Code="BRO0008"
-           Condition="'$(_InstanceStatus)' == 'running' AND '$(_InstanceLockState)' != 'ok' AND '$(RelaunchAfterInstall)' == 'true'"
-           Text="This build is installed, but instance $(CLAUDE_SESSION_ID) is still running the previous one: the broforce-game lock $(_InstanceLockState). Take the lock with 'cs lock take broforce-game --queue' and rebuild, or relaunch the instance yourself." />
   </Target>
 
   <Target Name="InstallToGame" AfterTargets="Build" DependsOnTargets="DetectProjectType"
@@ -414,7 +398,7 @@
 
     <Error Code="BRO0009"
            Condition="'$(_InstanceRelaunchExit)' != '0'"
-           Text="Relaunching instance $(CLAUDE_SESSION_ID) failed with exit code $(_InstanceRelaunchExit); the instance may be stopped." />
+           Text="Relaunching instance $(CLAUDE_SESSION_ID) failed with exit code $(_InstanceRelaunchExit); the launcher's message is above. The build is installed; the instance keeps running the previous build unless the launcher stopped it." />
 
     <Message Importance="high"
              Condition="'$(_InstanceRelaunchExit)' == '0'"

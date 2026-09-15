@@ -130,7 +130,7 @@ _NO_LAUNCH_FLAGS := /p:CloseBroforceOnBuild=false /p:LaunchBroforceOnBuild=false
 
 # $(call _POST_BUILD,"<project>") - one msbuild run after building every project: launches the
 # game when LAUNCH is on, and relaunches this session's own game instance when one is running
-_POST_BUILD = $(call _MSB,$(1) /t:LaunchOnly $(MSBUILD_FLAGS) /p:CloseBroforceOnBuild=false /p:LaunchBroforceOnBuild=$(if $(_DO_LAUNCH),true,false) /p:RelaunchAfterInstall=true $(INSTALL_FLAGS) $(RELAUNCH_FLAGS) $(LAUNCH_ARGS_FLAGS))
+_POST_BUILD = $(call _MSB,$(1) /t:LaunchOnly $(MSBUILD_FLAGS) /p:CloseBroforceOnBuild=false /p:LaunchBroforceOnBuild=$(if $(_DO_LAUNCH),true,false) $(INSTALL_FLAGS) $(RELAUNCH_FLAGS) $(LAUNCH_ARGS_FLAGS))
 _DO_POST_BUILD := $(if $(_DO_LAUNCH)$(_DO_RELAUNCH),1)
 
 # Code cleanup configuration (JetBrains ReSharper CLI)
