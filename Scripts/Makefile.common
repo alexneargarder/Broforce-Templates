@@ -31,9 +31,9 @@
 #   MSBUILD=<path>    - MSBuild binary to use
 #   LAUNCH=no         - Don't kill or launch the game
 #   INSTALL=no        - Don't copy built DLLs into the game directory
-#   INSTALL=default   - Install into the Default profile even while isolated
+#   INSTALL=default   - Promote a mod into the Default profile (the only way a session build reaches it)
 #   ALLOW_STAGE_REFS=1 - Let INSTALL=default proceed when the mod was compiled against a RocketLib or
-#                      BroMakerLib from this session's private copy
+#                      BroMakerLib from this session's stage
 #   LAUNCH_ARGS="..." - Extra args forwarded to the launch command
 #   PROJECT=<name>    - Scope the cleanup targets to one discovered project
 #
@@ -359,13 +359,12 @@ isolate:
 	@test -n "$(CLAUDE_SESSION_ID)" || { echo "Error: isolate needs CLAUDE_SESSION_ID; there is no session to isolate." >&2; exit 1; }
 	@existed=; [ -d "$(_STAGE_DIR)/UMM" ] && existed=1; \
 	mkdir -p "$(_STAGE_DIR)/UMM/Mods" "$(_STAGE_DIR)/UMM/BroMaker_Storage" "$(_STAGE_DIR)/UMM/Config"; \
-	[ -e "$(_STAGE_DIR)/UMM/.isolated" ] || touch "$(_STAGE_DIR)/UMM/.isolated"; \
 	if [ -n "$$existed" ]; then \
-	  echo "Already isolated at $(_STAGE_DIR)/UMM"; \
+	  echo "Stage already exists at $(_STAGE_DIR)/UMM"; \
 	else \
-	  echo "Isolated. Builds in this session install into $(_STAGE_DIR)/UMM"; \
+	  echo "Created the stage at $(_STAGE_DIR)/UMM"; \
 	fi; \
-	echo "A running game keeps what it launched with; relaunch it to pick up new builds."
+	echo "Builds in this session install there; INSTALL=default promotes a mod into the Default profile."
 
 .PHONY: unisolate
 unisolate:
@@ -375,7 +374,7 @@ unisolate:
 	 else \
 	  find "$(_STAGE_DIR)" -mindepth 1 -maxdepth 3 | sort; \
 	  rm -rf "$(_STAGE_DIR)"; \
-	  echo "Removed $(_STAGE_DIR)"; \
+	  echo "Removed $(_STAGE_DIR); the next build in this session recreates it."; \
 	 fi
 
 .PHONY: help
@@ -389,8 +388,8 @@ help:
 	@echo "  make rebuild            Clean, then build all projects"
 	@echo "  make cleanup            Run ReSharper code cleanup on all code"
 	@echo "  make cleanup-changed    Run ReSharper code cleanup on git-changed files"
-	@echo "  make isolate            Build into a private copy of the mods folder for this session"
-	@echo "  make unisolate          Delete that private copy and build into the shared mods folder again"
+	@echo "  make isolate            Create this session's stage now (builds under a session create it anyway)"
+	@echo "  make unisolate          Delete this session's stage; the next build recreates it"
 ifdef EXTRA_HELP
 	@echo ""
 	@$(EXTRA_HELP)
@@ -400,8 +399,8 @@ endif
 	@echo "  LAUNCH=no               Don't kill or launch game"
 	@echo "  LAUNCH=yes              Kill and launch game"
 	@echo "  INSTALL=no              Don't copy DLL to game directory"
-	@echo "  INSTALL=default         Install into the shared mods folder even while isolated"
-	@echo "  ALLOW_STAGE_REFS=1      Let INSTALL=default proceed when the mod was compiled against a RocketLib or BroMakerLib from the private copy"
+	@echo "  INSTALL=default         Promote a mod into the Default profile (the only way a session build reaches it)"
+	@echo "  ALLOW_STAGE_REFS=1      Let INSTALL=default proceed when the mod was compiled against a RocketLib or BroMakerLib from this session's stage"
 	@echo "  LAUNCH_ARGS=\"...\"       Forward extra args to the launch command"
 	@echo "  PROJECT=<name>          Scope cleanup to one project (AUTO_DISCOVER only)"
 	@echo ""

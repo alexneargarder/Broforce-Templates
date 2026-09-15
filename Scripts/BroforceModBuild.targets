@@ -66,7 +66,7 @@
     <DeferInstanceRelaunch Condition="'$(DeferInstanceRelaunch)' == ''">false</DeferInstanceRelaunch>
 
     <BroforceInstallRoot Condition="'$(BroforceInstallRoot)' == '' AND '$(InstallTo)' == 'default'">$(BroforcePath)</BroforceInstallRoot>
-    <BroforceInstallRoot Condition="'$(BroforceInstallRoot)' == '' AND '$(BroforceStageExists)' == 'true'">$(BroforceSessionStage)</BroforceInstallRoot>
+    <BroforceInstallRoot Condition="'$(BroforceInstallRoot)' == '' AND '$(BroforceSessionStage)' != '' AND '$(CLAUDECODE)' != '' AND '$(IsLinux)' == 'true'">$(BroforceSessionStage)</BroforceInstallRoot>
     <BroforceInstallRoot Condition="'$(BroforceInstallRoot)' == ''">$(BroforcePath)</BroforceInstallRoot>
     <InstallTarget Condition="'$(BroforceInstallRoot)' == '$(BroforcePath)'">default</InstallTarget>
     <InstallTarget Condition="'$(InstallTarget)' == '' AND '$(BroforceSessionStage)' != '' AND '$(BroforceInstallRoot)' == '$(BroforceSessionStage)'">stage</InstallTarget>
@@ -74,7 +74,7 @@
   </PropertyGroup>
 
   <PropertyGroup>
-    <!-- Isolated builds compile against the stage; a promotion build probes Default first so the
+    <!-- Session builds compile against the stage; a promotion build probes Default first so the
          promoted DLL binds to what Default has -->
     <_RefRoot1 Condition="'$(BroforceStageExists)' == 'true' AND '$(InstallTo)' != 'default'">$(BroforceSessionStage)</_RefRoot1>
     <_RefRoot2 Condition="'$(BroforceStageExists)' == 'true' AND '$(InstallTo)' != 'default'">$(BroforcePath)</_RefRoot2>
@@ -159,10 +159,10 @@
 
     <Message Importance="high"
              Condition="'$(_RocketLibFromStage)' == 'true' AND '@(_RocketLibReference)' != ''"
-             Text="RocketLib comes from this session's private copy: $(RocketLibPath) (buildId $(_RocketLibBuildId))" />
+             Text="RocketLib comes from this session's stage: $(RocketLibPath) (buildId $(_RocketLibBuildId))" />
     <Message Importance="high"
              Condition="'$(_BroMakerLibFromStage)' == 'true' AND '@(_BroMakerLibReference)' != ''"
-             Text="BroMakerLib comes from this session's private copy: $(BroMakerLibPath) (buildId $(_BroMakerLibBuildId))" />
+             Text="BroMakerLib comes from this session's stage: $(BroMakerLibPath) (buildId $(_BroMakerLibBuildId))" />
   </Target>
 
   <Target Name="CheckStageReferences" BeforeTargets="ResolveAssemblyReferences"
@@ -170,10 +170,10 @@
           Condition="'$(DesignTimeBuild)' != 'true' AND '$(InstallTo)' == 'default' AND '$(AllowStageRefs)' != 'true'">
     <Error Code="BRO0005"
            Condition="'$(_RocketLibFromStage)' == 'true' AND '@(_RocketLibReference)' != ''"
-           Text="This mod was compiled against the RocketLib in this session's private copy ($(RocketLibPath)), so it must not be installed into the shared mods folder. Install RocketLib with INSTALL=default first and rebuild, or pass ALLOW_STAGE_REFS=1 to override." />
+           Text="This mod was compiled against the RocketLib in this session's stage ($(RocketLibPath)), so it must not be promoted into the Default profile. Promote RocketLib with INSTALL=default first and rebuild, or pass ALLOW_STAGE_REFS=1 to override." />
     <Error Code="BRO0005"
            Condition="'$(_BroMakerLibFromStage)' == 'true' AND '@(_BroMakerLibReference)' != ''"
-           Text="This mod was compiled against the BroMakerLib in this session's private copy ($(BroMakerLibPath)), so it must not be installed into the shared mods folder. Install BroMakerLib with INSTALL=default first and rebuild, or pass ALLOW_STAGE_REFS=1 to override." />
+           Text="This mod was compiled against the BroMakerLib in this session's stage ($(BroMakerLibPath)), so it must not be promoted into the Default profile. Promote BroMakerLib with INSTALL=default first and rebuild, or pass ALLOW_STAGE_REFS=1 to override." />
   </Target>
 
   <Target Name="KillGameProcess" BeforeTargets="Build"
@@ -366,11 +366,14 @@
            Text="Timed out after $(BroforceInstallLockWait)s waiting for .install.lock in $(BroforceInstallRoot). Nothing was installed." />
     <Error Code="BRO0006"
            Condition="'$(IsLinux)' == 'true' AND '$(_InstallSwapExit)' == '76'"
-           Text="Installed into $(InstallDir), then timed out after $(BroforceInstallLockWait)s waiting for .install.lock in $(BroforceSessionStage). This session's private copy still holds its own $(InstallFolderName)." />
+           Text="Installed into $(InstallDir), then timed out after $(BroforceInstallLockWait)s waiting for .install.lock in $(BroforceSessionStage). This session's stage still holds its own $(InstallFolderName)." />
     <Error Code="BRO0007"
            Condition="'$(IsLinux)' == 'true' AND '$(_InstallSwapExit)' != '0' AND '$(_InstallSwapExit)' != '75' AND '$(_InstallSwapExit)' != '76'"
            Text="Installing into $(InstallDir) failed with exit code $(_InstallSwapExit)." />
 
+    <Message Importance="high"
+             Condition="'$(IsLinux)' == 'true' AND '$(_InstallSwapExit)' == '0' AND '$(InstallTo)' == 'default' AND '$(InstallTarget)' == 'default' AND '$(CLAUDE_SESSION_ID)' != ''"
+             Text="Promoted $(InstallFolderName) into the Default profile ($(InstallDir)); any previous copy is in $(BroforceInstallBackupRoot)/$(InstallFolderName). Other builds in this session install into $(BroforceSessionStage)." />
     <Message Text="✓ Installed successfully" Importance="high" Condition="'$(VerboseBuildOutput)' == 'true'" />
     <Message Text="  Files: @(CopiedContentFiles->Count()) files" Importance="high" Condition="'$(VerboseBuildOutput)' == 'true'" />
 
