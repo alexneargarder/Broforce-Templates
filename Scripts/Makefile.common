@@ -31,7 +31,7 @@
 #   MSBUILD=<path>    - MSBuild binary to use
 #   LAUNCH=no         - Don't kill or launch the game
 #   INSTALL=no        - Don't copy built DLLs into the game directory
-#   INSTALL=default   - Promote a mod into the Default profile (the only way a session build reaches it)
+#   INSTALL=default   - Install into the Default profile instead of this session's stage
 #   ALLOW_STAGE_REFS=1 - Let INSTALL=default proceed when the mod was compiled against a RocketLib or
 #                      BroMakerLib from this session's stage
 #   LAUNCH_ARGS="..." - Extra args forwarded to the launch command
@@ -399,7 +399,7 @@ endif
 	@echo "  LAUNCH=no               Don't kill or launch game"
 	@echo "  LAUNCH=yes              Kill and launch game"
 	@echo "  INSTALL=no              Don't copy DLL to game directory"
-	@echo "  INSTALL=default         Promote a mod into the Default profile (the only way a session build reaches it)"
+	@echo "  INSTALL=default         Install into the Default profile instead of this session's stage"
 	@echo "  ALLOW_STAGE_REFS=1      Let INSTALL=default proceed when the mod was compiled against a RocketLib or BroMakerLib from this session's stage"
 	@echo "  LAUNCH_ARGS=\"...\"       Forward extra args to the launch command"
 	@echo "  PROJECT=<name>          Scope cleanup to one project (AUTO_DISCOVER only)"
