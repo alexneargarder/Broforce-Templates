@@ -40,7 +40,7 @@
 
             pythonImportsCheck = [ "broforce_tools" ];
 
-            makeWrapperArgs = [ "--set BROFORCE_TEMPLATES_DIR ${placeholder "out"}/${python3.sitePackages}/broforce_tools/templates" ];
+            makeWrapperArgs = [ "--set" "BROFORCE_TEMPLATES_DIR" "${placeholder "out"}/${python3.sitePackages}/broforce_tools/templates" ];
 
             postInstall = ''
               # Install bash completion

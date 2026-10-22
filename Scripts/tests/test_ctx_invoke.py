@@ -6,8 +6,8 @@ This causes TypeError when the value is used in os.path.join().
 """
 import json
 
-import click.exceptions
 import pytest
+import typer
 
 from broforce_tools.cli import changelog_show, changelog_edit, changelog_add
 
@@ -54,7 +54,7 @@ class TestChangelogCtxInvoke:
         """Calling changelog_show() with no args should not TypeError."""
         try:
             changelog_show()
-        except (SystemExit, click.exceptions.Exit):
+        except (SystemExit, typer.Exit):
             pass
         except TypeError as e:
             if "ArgumentInfo" in str(e) or "join()" in str(e):
@@ -64,7 +64,7 @@ class TestChangelogCtxInvoke:
         """Calling changelog_edit() with no args should not TypeError."""
         try:
             changelog_edit()
-        except (SystemExit, click.exceptions.Exit):
+        except (SystemExit, typer.Exit):
             pass
         except TypeError as e:
             if "ArgumentInfo" in str(e) or "join()" in str(e):
@@ -74,5 +74,5 @@ class TestChangelogCtxInvoke:
         """Calling changelog_add() with no args should not TypeError."""
         try:
             changelog_add()
-        except (SystemExit, click.exceptions.Exit):
+        except (SystemExit, typer.Exit):
             pass  # Expected — no message provided

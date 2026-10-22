@@ -1,5 +1,4 @@
 """CLI application using Typer."""
-import click.exceptions
 import filecmp
 import json
 import os
@@ -140,7 +139,7 @@ def _run_batch(projects: list[Project], action, **kwargs) -> None:
             print(f"\n{Colors.HEADER}{'='*50}{Colors.ENDC}")
         try:
             action(project, **kwargs)
-        except (SystemExit, click.exceptions.Exit):
+        except (SystemExit, typer.Exit):
             failures.append(project.name)
         except Exception as e:
             print(f"{Colors.FAIL}Error: {e}{Colors.ENDC}")
@@ -563,7 +562,7 @@ def do_create_project(
                     print(f"  2. Replace placeholder.png with your sprite")
                     print(f"  3. Run 'bt init-thunderstore' when ready to publish")
 
-    except (SystemExit, click.exceptions.Exit):
+    except (SystemExit, typer.Exit):
         raise
     except Exception as e:
         print(f"{Colors.FAIL}Error: Failed during file processing: {e}{Colors.ENDC}")
